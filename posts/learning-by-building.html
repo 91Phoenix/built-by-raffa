@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Why I Started Writing &mdash; Built by Raffa</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <nav id="nav-slot"></nav>
+
+  <main>
+    <a href="index.html" class="back-link">&larr; All posts</a>
+
+    <article>
+      <div class="post-header">
+        <h1>Why I Started Writing</h1>
+        <div class="post-meta">
+          <span>April 2026</span>
+          <span class="dot">&middot;</span>
+          <span>12 min read</span>
+        </div>
+      </div>
+
+      <p>I've been writing software professionally for the better part of a decade. I've built microservice frameworks, worked on distributed build systems serving hundreds of thousands of builds per month, and led a team through periods of intense growth. And yet &mdash; I've never really written any of it down.</p>
+
+      <p>This blog is my attempt to fix that.</p>
+
+      <h2>Starting in Bologna</h2>
+
+      <p>My journey into computer science started in 2010 at the University of Bologna. I came in curious and left with both a Bachelor's and a Master's degree, finishing 110/110 cum laude with a thesis on microservice architectures &mdash; back when "microservices" was still a contested idea and not yet the default architectural choice.</p>
+
+      <p>Studying gave me the vocabulary and the mental models, but even then I could feel the gap between understanding something in a classroom and making it work under real constraints. That tension would become a running theme.</p>
+
+      <h2>Ferrero, Reply, and Learning by Doing</h2>
+
+      <p>In 2016 I started my professional career with an internship at Ferrero in Luxembourg. It was my first real taste of how software gets built inside a large organization &mdash; the design docs, the meetings that could have been emails, the compromise between what's elegant and what ships.</p>
+
+      <p>After that, I moved to Milan to join Reply, a consulting company, where I worked with CheBanca! &mdash; a FinTech company. The project was right in my wheelhouse: exploring microservice architectures and building frameworks so that the wider engineering department could spin up microservices easily, scalably, and securely. It was infrastructure work, but with a product mindset &mdash; we weren't just building for ourselves, we were building for dozens of other engineers who depended on our abstractions.</p>
+
+      <p>That experience taught me something I hadn't fully grasped in school: <strong>the hardest part of building software isn't the code itself, it's making it work for other people.</strong></p>
+
+      <h2>Dublin and Murex</h2>
+
+      <p>The Reply stint was short, because I wanted to move abroad again. I landed in Dublin at Murex, a leader in capital markets software. I joined the risk control team, working with scrum methodologies &mdash; real sprint planning, real retros, real ownership over features from start to finish.</p>
+
+      <p>I developed features, handled maintenance, jumped into production support rotations, and mentored engineers. But one of the things I'm most proud of from that period is the innovation sprints. Murex gave engineers allocated time to explore new technologies and propose ideas for the company. I used those sprints to prototype things I thought could make a real difference &mdash; and some of them actually did.</p>
+
+      <p>It was during this time that I started noticing how much I learned when I had to articulate my thinking to someone else. Mentoring, proposing ideas, defending technical decisions &mdash; those moments forced clarity in a way that quietly writing code never did.</p>
+
+      <h2>HubSpot: Scaling the Build</h2>
+
+      <p>In 2020, in the middle of COVID, I joined HubSpot. I met my team in person more than a year after starting. HubSpot was growing fast &mdash; partly because of the pandemic accelerating the shift to digital, and that growth put enormous pressure on everything, including the build system.</p>
+
+      <p>I joined the Build team, responsible for HubSpot's internal CI &mdash; a fully in-house, distributed system that was originally built by a small team who were also responsible for the deployment system. These were complex distributed systems built incredibly fast, and as HubSpot grew, many of the original assumptions started breaking. The Maven dependency tree was getting deeper, the build volume was exploding, and the infrastructure was struggling to keep up.</p>
+
+      <p>When I joined, the system was unstable &mdash; critical issues were frequent, and the team was small. Over the next two and a half years, I went from Software Engineer to Senior Software Engineer to Tech Lead. I worked on optimizations and features that made the system significantly more reliable. I grew the team from 3 to 5, including an intern rotation. And together we took the CI from roughly 80,000 builds per month to over 400,000 &mdash; while decreasing critical incidents and cutting artifact storage costs.</p>
+
+      <p>The numbers tell part of the story, but the real lessons were in how we got there: debugging distributed system failures at 2am, making hard tradeoffs between throughput and isolation, convincing stakeholders that investing in infrastructure would pay off, and learning to lead a team through ambiguity when the "right" answer wasn't obvious.</p>
+
+      <h2>Back to Italy, and a New Challenge</h2>
+
+      <p>In June 2023, for personal reasons, I moved back to Italy &mdash; but kept working for HubSpot. Remote-first made that possible, and the change of scenery coincided with a change of focus.</p>
+
+      <p>I transitioned to the DevEx Metrics team. The original mandate was based on the DORA metrics paper &mdash; four metrics that were supposed to tell you how well your engineering org was performing. But pretty quickly, we realized DORA wasn't telling us the whole story. So we charted our own path.</p>
+
+      <p>We built an application that provided engineering productivity insights at different granularities &mdash; for individual contributors, for teams, and for leadership. It caught on. People used it heavily to understand and improve how their teams operated. But it also revealed something uncomfortable: <strong>metrics are powerful, and powerful things get misused.</strong> Some managers started using the numbers for performance reviews, which sounds reasonable in theory but is dangerously reductive in practice. A metric without managerial context is just a number &mdash; and numbers without context make poor judges of people.</p>
+
+      <p>That tension between quantitative and qualitative stuck with me. And it led to something I'm genuinely proud of.</p>
+
+      <p>Last year, I proposed an idea for HubSpot's internal hackathon: what if instead of just showing metrics, we built something that could <em>describe</em> engineering productivity in human terms? I formed a team, ended up merging with another team with a complementary vision, and together we built an application that consumed the data we already had access to and generated qualitative descriptions of an individual's engineering productivity.</p>
+
+      <p>The hackathon was a success &mdash; we got more votes than the second-place finisher by a wide margin. But what happened after is what mattered. My team shipped it to production for everyone at HubSpot. We then evolved it into an agentic system that produces genuinely high-quality narratives around engineering work. Some of the most respected engineers in the company reached out to tell us how useful it was.</p>
+
+      <p>This project crystallized something for me: <strong>the most impactful things I've built are the ones that take raw information and make it understandable to people.</strong> Frameworks that let other engineers move faster. Metrics that help teams see what they couldn't see before. A tool that turns data into a story someone can actually use.</p>
+
+      <h2>Why Write</h2>
+
+      <p>Looking back at all of this, I realize I've spent years accumulating experiences that I rarely stop to reflect on. Every role taught me something different &mdash; Bologna gave me the foundation, Ferrero showed me how enterprises work, Reply taught me to build for other engineers, Murex sharpened my product and communication instincts, and HubSpot pushed me to grow as both an engineer and a leader. The DevEx and hackathon work reinforced that I care most about making complex things understandable.</p>
+
+      <p>I started this blog because I want a place to do two things: <strong>reflect on what I've learned</strong> and <strong>document what I'm still learning</strong>. The second part matters just as much as the first. Even with years of experience, I'm still building side projects, still hitting walls, still having those "wait, how does this actually work?" moments. The projects haven't stopped &mdash; and neither has the learning.</p>
+
+      <p>Expect technical deep dives, honest post-mortems, some "I wasted a weekend on this" stories, and practical takes on what actually worked and what didn't.</p>
+
+      <p>Thanks for reading.</p>
+    </article>
+  </main>
+
+  <footer id="footer-slot"></footer>
+
+  <script src="../js/site.js"></script>
+</body>
+</html>
