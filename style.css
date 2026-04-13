@@ -138,8 +138,11 @@ main {
 }
 
 .logo-icon {
-  height: 5rem;
-  width: 5rem;
+  height: 12rem;
+  width: 12rem;
+  border-radius: 8px;
+  object-fit: contain;
+}
 }
 
 .hero p {
