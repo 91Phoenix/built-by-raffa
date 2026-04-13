@@ -3,11 +3,15 @@
   var home = inPosts ? "../index.html" : "./";
   var posts = inPosts ? "./index.html" : "posts/index.html";
 
+  var imgRoot = inPosts ? "../" : "./";
   var nav = document.getElementById("nav-slot");
   nav.innerHTML =
     '<a href="' +
     home +
-    '" class="logo">Built by Raffa</a>' +
+    '" class="logo-icon-link"><img src="' + imgRoot + 'img/icon.png" alt="" class="logo-icon"></a>' +
+    '<a href="' +
+    home +
+    '" class="logo-text">Built by Raffa</a>' +
     '<div class="nav-right">' +
     '<a href="' +
     home +

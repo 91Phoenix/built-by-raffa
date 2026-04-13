@@ -56,23 +56,36 @@ nav {
   margin: 0 auto;
   padding: 2rem 1.5rem 0;
   display: flex;
-  justify-content: space-between;
+  justify-content: center;
   align-items: center;
+  position: relative;
 }
 
-nav .logo {
+nav .logo-icon-link {
+  position: absolute;
+  left: 1.5rem;
+}
+
+nav .logo-icon-link:hover .logo-icon {
+  opacity: 0.8;
+}
+
+nav .logo-text {
   font-family: 'EB Garamond', Georgia, serif;
-  font-size: 1.4rem;
+  font-size: 1.8rem;
   font-weight: 600;
   color: var(--text);
   letter-spacing: -0.02em;
+  font-style: italic;
 }
 
-nav .logo:hover {
+nav .logo-text:hover {
   color: var(--accent);
 }
 
 nav .nav-right {
+  position: absolute;
+  right: 1.5rem;
   display: flex;
   align-items: center;
   gap: 1.25rem;
@@ -122,6 +135,11 @@ main {
   line-height: 1.2;
   letter-spacing: -0.03em;
   margin-bottom: 0.75rem;
+}
+
+.logo-icon {
+  height: 5rem;
+  width: 5rem;
 }
 
 .hero p {
