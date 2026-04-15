@@ -11,7 +11,7 @@
     '" class="logo-icon-link"><img src="' + imgRoot + 'img/icon.png" alt="" class="logo-icon"></a>' +
     '<a href="' +
     home +
-    '" class="logo-text">Built by Raffa</a>' +
+    '" class="logo-text">Bradicode</a>' +
     '<div class="nav-right">' +
     '<a href="' +
     home +
@@ -41,7 +41,7 @@
   var footer = document.getElementById("footer-slot");
   footer.innerHTML =
     '<div class="footer-row">' +
-    '<span>&copy; 2026 Built by Raffa</span>' +
+    '<span>&copy; 2026 Bradicode</span>' +
     '<div class="footer-links">' +
     '<a href="mailto:raffaele.rotella@gmail.com">Email</a>' +
     '<a href="https://www.linkedin.com/in/raffaelerot/" target="_blank" rel="noopener noreferrer">LinkedIn</a>' +

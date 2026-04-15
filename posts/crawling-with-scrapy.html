@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building a Production Web Scraper: Why I Chose Scrapy &mdash; Bradicode</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <nav id="nav-slot"></nav>
+
+  <main>
+    <a href="index.html" class="back-link">&larr; All posts</a>
+
+    <article>
+      <div class="post-header">
+        <h1>Building a Production Web Scraper: Why I Chose Scrapy</h1>
+        <div class="post-meta">
+          <span>April 2026</span>
+          <span class="dot">&middot;</span>
+          <span>18 min read</span>
+        </div>
+      </div>
+
+      <p>Today, both side projects built for learning and actual production systems scrape the internet to retrieve data and populate systems with valuable insights. Whether it's aggregating product listings, building datasets for machine learning, or monitoring changes at scale, web crawling is a fundamental engineering skill &mdash; and the choices you make about how to crawl matter more than most people think.</p>
+
+      <p>I scraped thousands of recipes and ingredient encyclopedias from a popular recipe website for my food AI platform &mdash; a project I started for fun that's becoming quite interesting. I started with <code>requests</code> + <code>BeautifulSoup</code>, rewrote everything in Scrapy, and ran an 84-test migration audit to prove the new scrapers produce identical data. This is what I learned about engineering choices, testing, and when a framework actually matters.</p>
+
+      <hr>
+
+      <h2>The Starting Point: Two Scripts That Worked</h2>
+
+      <p>My original setup was two standalone Python scripts &mdash; <code>crawler.py</code> (335 lines) and <code>ingredient_crawler.py</code> (548 lines). They used <code>requests.Session()</code> with a spoofed Chrome User-Agent, manual exponential backoff retries, hardcoded <code>time.sleep()</code> delays, and mixed extraction logic with database persistence.</p>
+
+      <p>They worked. They populated my database with 848 recipes and 230 ingredients. But they had problems that only surfaced over time &mdash; bugs in category classification, arbitrary page limits, no robots.txt respect, and a spooky <code>SynchronousOnlyOperation</code> error I'd eventually hit when trying to scale.</p>
+
+      <hr>
+
+      <h2>Why Scrapy and Not Something Else</h2>
+
+      <p>I evaluated three options before committing to Scrapy:</p>
+
+      <h3>Option 1: Stay with <code>requests</code> + <code>BeautifulSoup</code></h3>
+      <p>What I already had. Zero migration cost, but every improvement (concurrency, retries, robots.txt, rate limiting) requires writing more ad-hoc code that's already been written better in Scrapy.</p>
+
+      <h3>Option 2: Use <code>httpx</code> + <code>parsel</code> (or <code>playwright</code>)</h3>
+      <p>A lighter-weight alternative. <code>httpx</code> gives you async HTTP, <code>parsel</code> gives you CSS/XPath selectors (same engine Scrapy uses). But you still build everything else yourself: the scheduler, the dupefilter, the middleware chain, the item pipeline, the spider lifecycle. You end up building a worse Scrapy.</p>
+
+      <h3>Option 3: Scrapy</h3>
+      <p>The batteries-included framework. It gives you robots.txt checking, retry middleware, throttling, concurrent requests, deduplication, item pipelines, and a shell for interactive debugging. The tradeoff is a learning curve and opinionated architecture &mdash; but those opinions are exactly what prevent the bugs I had.</p>
+
+      <p>I chose Scrapy because <strong>concurrency, error handling, rate limiting, and robots.txt compliance are problems that must be solved one way or another &mdash; and doing them manually means reimplementing what a battle-tested framework already handles better</strong>. The things that actually required my domain knowledge &mdash; extraction logic, HTML parsing strategies, category classification &mdash; I keep identical, just moved into spider methods instead of standalone functions.</p>
+
+      <hr>
+
+      <h2>Engineering Decisions That Mattered</h2>
+
+      <h3>1. <code>ROBOTSTXT_OBEY = True</code> and an Honest User-Agent</h3>
+
+      <p>My old crawler spoofed a Chrome User-Agent and never checked <code>robots.txt</code>. The target site's <code>robots.txt</code> blocks AI crawlers entirely (<code>GPTBot</code>, <code>ClaudeBot</code>, etc.) and disallows paths like <code>/admin/</code> and <code>/search/</code>. I was accidentally compliant only because I happened to target allowed paths.</p>
+
+      <pre><code># settings.py
+ROBOTSTXT_OBEY = True
+USER_AGENT = 'RecipeBot (+https://github.com/recipebot)'</code></pre>
+
+      <p>This is an ethical and practical decision. An honest User-Agent means the site operator can contact me, and robots.txt compliance means I don't accidentally crawl pages I shouldn't. If the site decides to block my bot, I'll know immediately instead of silently bypassing their rules.</p>
+
+      <h3>2. No Arbitrary Page Limits</h3>
+
+      <p>My old crawler had <code>MAX_PAGES = 15</code> hardcoded. When a recipe category had 20 pages, I silently missed the last 5. Scrapy spiders follow next-page links until they stop existing:</p>
+
+      <pre><code>def parse_category(self, response, category):
+    # Extract recipe links, then follow next page
+    for link in response.css('article.recipe-card a[href*="recipes"]::attr(href)').getall():
+        yield response.follow(link, callback=self.parse_recipe, cb_kwargs={'category': category})
+
+    next_page = response.css('a[rel="next"]::attr(href)').get()
+    if next_page:
+        yield response.follow(next_page, callback=self.parse_category, cb_kwargs={'category': category})</code></pre>
+
+      <p>No <code>MAX_PAGES</code>. The site itself tells me when I'm done. I currently get ~224 recipes per category; the old crawler was capped at whatever 15 pages yielded.</p>
+
+      <h3>3. <code>xpath('string()')</code> Instead of <code>::text</code></h3>
+
+      <p>This was a subtle bug I caught during migration testing. Scrapy's <code>::text</code> pseudo-selector only gets <strong>direct</strong> text nodes, missing text inside nested elements like <code>&lt;a&gt;&lt;strong&gt;Pasta&lt;/strong&gt; 00&lt;/a&gt;</code>. My old <code>BeautifulSoup.get_text()</code> grabbed all text including nested elements.</p>
+
+      <pre><code># WRONG: misses text inside &lt;strong&gt;, &lt;em&gt;, etc.
+name = dd.css('a::text').get()        # returns "00" not "Pasta 00"
+
+# CORRECT: gets all text including nested elements
+name = dd.css('a').xpath('string()').get('')  # returns "Pasta 00"</code></pre>
+
+      <p>I normalize with <code>' '.join(text.split())</code> to match the old <code>clean_text()</code> behavior. This was caught by my comparison tests &mdash; the old crawler produced <code>"Farina 00 300 g"</code> while the new one initially produced <code>"Farina 00 300\n\t\t\t\t\t\t\t\t\t\tg"</code>.</p>
+
+      <h3>4. Image URL Normalization</h3>
+
+      <p>The ingredient encyclopedia serves images from the main domain, but Scrapy's <code>response.urljoin()</code> resolves relative URLs against the current domain. My old crawler explicitly normalized to the main domain:</p>
+
+      <pre><code># Old crawler: force all URLs to the main domain
+if src.startswith('//'):
+    src = 'https:' + src
+elif src.startswith('/'):
+    src = 'https://www.example.com' + src</code></pre>
+
+      <p>I replicate this in the Scrapy spider as a <code>_normalize_url()</code> static method. Without it, <code>og:image</code> paths resolved to the encyclopedia subdomain instead of the main site, breaking image downloads.</p>
+
+      <h3>5. Category Rule Ordering Matters</h3>
+
+      <p>My <code>classify_ingredient()</code> function uses substring matching. This means rule order is critical:</p>
+
+      <ul>
+        <li><code>"mela"</code> (Frutta keyword) matches <code>"Melanzane"</code> (a vegetable)</li>
+        <li><code>"fagiol"</code> (Verdure keyword for green beans) matches <code>"Fagioli"</code> (a legume)</li>
+        <li><code>"pisell"</code> (Verdure keyword for peas) matches <code>"Piselli"</code> (a legume)</li>
+      </ul>
+
+      <p>The fix: place <code>Legumi</code> before <code>Verdure</code> in the rule list so <code>fagioli</code> and <code>piselli</code> match the legume rules first, and place <code>Verdure</code> before <code>Frutta</code> so <code>melanzan</code> matches before <code>mela</code> does:</p>
+
+      <pre><code>CATEGORY_RULES = [
+    ('Carni',      ['agnell', 'manzo', ...]),
+    ('Pesce',      ['salmone', 'tonno', ..., 'rana pescatrice']),
+    ('Latticini',  ['mozzarell', 'parmigian', ...]),
+    ('Cereali e Pasta', ['pasta', 'spaghetti', ...]),
+    ('Erbe e Aromi', ['basilico', 'rosmarino', ...]),
+    ('Spezie',     ['pepe', 'cannella', ...]),
+    ('Legumi',     ['fagioli', 'lenticchi', ...]),  # BEFORE Verdure
+    ('Verdure',    ['carota', 'melanzan', ...]),     # BEFORE Frutta
+    ('Frutta',     ['mela', 'pera', ...]),
+    ('Condimenti', ['olio', 'aceto', ...]),
+    ('Bevande',    ['vino', 'birra', ...]),
+    ('Dolci',      ['cioccolato', 'cacao', ...]),
+]</code></pre>
+
+      <p>This is the kind of bug that unit testing catches before it becomes a data problem.</p>
+
+      <h3>6. Separation of Concerns: Spiders vs. Pipelines</h3>
+
+      <p>My old <code>crawler.py</code> did everything in one function: fetch the URL, parse the HTML, extract the data, download the image, save to the database, track progress. Scrapy enforces a structure where:</p>
+
+      <ul>
+        <li><strong>Spiders</strong> only extract data and yield <code>Item</code> objects</li>
+        <li><strong>Pipelines</strong> receive items and handle persistence</li>
+        <li><strong>Settings</strong> configure cross-cutting concerns (retries, throttling, robots.txt)</li>
+      </ul>
+
+      <pre><code># Spider: extraction only
+yield RecipeItem(
+    title=title, url=response.url, ingredienti=ingredienti,
+    steps=steps, category=category, ...
+)
+
+# Pipeline: persistence only
+class RecipePipeline:
+    def process_item(self, item, spider):
+        self.Recipe.objects.update_or_create(url=item['url'], defaults={...})
+        return item</code></pre>
+
+      <p>This means changing the database schema doesn't touch the spider. Changing the extraction logic doesn't touch the pipeline. You can test each independently.</p>
+
+      <hr>
+
+      <h2>The Category Bug: A Case Study in Substring Matching</h2>
+
+      <p>I discovered "rana pescatrice" (monkfish) classified as <strong>Frutta</strong> in production. The root cause was rule ordering: <code>"mela"</code> in the Frutta keyword list matched as a substring of <code>"Melanzane"</code> (eggplant), and <code>"Melanzane"</code> was falling into Frutta before the Verdure rule could match <code>"melanzan"</code>. Similarly, <code>"fagiol"</code> (green beans, Verdure) matched as a prefix of <code>"Fagioli"</code> (legume).</p>
+
+      <p>These bugs existed in the old crawler too &mdash; they weren't introduced by Scrapy. The difference is that now I have 44 unit tests that catch them:</p>
+
+      <pre><code>class ClassifyIngredientTestCase(TestCase):
+    def test_fish_classification(self):
+        self.assertEqual(classify_ingredient('Rana pescatrice'), 'Pesce')  # was Frutta!
+        self.assertEqual(classify_ingredient('Coda di rospo'), 'Pesce')
+    
+    def test_vegetable_classification(self):
+        self.assertEqual(classify_ingredient('Melanzane'), 'Verdure')  # was Frutta!
+        self.assertEqual(classify_ingredient('Pomodori'), 'Verdure')
+    
+    def test_legumes_classification(self):
+        self.assertEqual(classify_ingredient('Fagioli'), 'Legumi')  # was Verdure!
+        self.assertEqual(classify_ingredient('Piselli'), 'Legumi')   # was Verdure!</code></pre>
+
+      <hr>
+
+      <h2>robots.txt: What I Learned</h2>
+
+      <p>The target site's <code>robots.txt</code>:</p>
+
+      <pre><code>User-agent: *
+Disallow: /ingredients/
+Disallow: /admin/
+Disallow: /search/
+Disallow: /recipes/*?
+
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ClaudeBot
+Disallow: /</code></pre>
+
+      <p>My old crawler: <strong>never checked it</strong>, spoofed a Chrome User-Agent, and hoped for the best. I never hit disallowed paths by accident, but only by coincidence.</p>
+
+      <p>With Scrapy's <code>ROBOTSTXT_OBEY = True</code>, every URL is checked against the site's published rules before being fetched. If I add a new spider that targets a disallowed path, Scrapy will refuse to crawl it and log why.</p>
+
+      <hr>
+
+      <h2>Testing: What I Have and What I Need</h2>
+
+      <h3>What I Have: 42 Unit Tests</h3>
+
+      <p>My test suite covers three layers:</p>
+
+      <p><strong>Layer 1: Unit tests for helper functions</strong> &mdash; <code>classify_ingredient()</code>, <code>truncate_at_sentence()</code>, <code>match_section()</code>. These are pure functions with no network or database dependencies:</p>
+
+      <pre><code>class ClassifyIngredientTestCase(TestCase):
+    def test_fish_classification(self):
+        self.assertEqual(classify_ingredient('Rana pescatrice'), 'Pesce')
+        self.assertEqual(classify_ingredient('Coda di rospo'), 'Pesce')
+    
+    def test_vegetable_classification(self):
+        self.assertEqual(classify_ingredient('Melanzane'), 'Verdure')  # not Frutta!
+        self.assertEqual(classify_ingredient('Patata'), 'Verdure')
+    
+    def test_unknown_classification(self):
+        self.assertEqual(classify_ingredient('Acqua'), 'Altro')</code></pre>
+
+      <p><strong>Layer 2: Spider parser tests</strong> &mdash; Feed mock HTML to spider parse methods and assert the output. No network required:</p>
+
+      <pre><code>class RecipeSpiderParseTestCase(TestCase):
+    def test_parse_recipe_basic(self):
+        spider = RecipeSpider()
+        json_ld = json.dumps({"@type": "Recipe", "estimatedCost": "Basso",
+                               "prepTime": "PT20M", "cookTime": "PT15M",
+                               "recipeYield": 4, "image": "https://example.com/img.jpg"})
+        html = f'&lt;html&gt;&lt;body&gt;&lt;h1&gt;Pasta al Pomodoro&lt;/h1&gt;...&lt;script type="application/ld+json"&gt;{json_ld}&lt;/script&gt;...&lt;/body&gt;&lt;/html&gt;'
+        response = HtmlResponse(url='https://...', body=html.encode('utf-8'))
+        results = list(spider.parse_recipe(response, category='Primi'))
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['title'], 'Pasta al Pomodoro')
+        self.assertEqual(results[0]['difficulty'], 'Facile')
+        self.assertEqual(results[0]['servings'], 4)
+
+    def test_parse_recipe_no_title_returns_none(self):
+        # Spider should skip pages with no title
+        ...
+    
+    def test_ingredient_text_with_nested_elements(self):
+        # xpath('string()') vs ::text — catches the nested &lt;strong&gt; bug
+        ...</code></pre>
+
+      <p><strong>Layer 3: Migration comparison tests</strong> &mdash; I ran an 84-test audit where I fetched the same pages with both the old and new crawlers and compared every field. This was a one-time manual test, but it proved the Scrapy spiders produce <strong>identical</strong> output:</p>
+
+      <pre><code>RECIPE COMPARISON: 20/20 passed (all fields match)
+INGREDIENT COMPARISON: 10/10 passed (all fields match)
+DB CONSISTENCY: 10/10 passed (spider output matches stored records)
+CATEGORY CLASSIFICATION: 44/44 passed</code></pre>
+
+      <h3>What I Need: Regression Tests for Continuous Crawling</h3>
+
+      <p>If the scraper runs as a daily/weekly job, I need automated regression testing. Here's what the ideal setup looks like:</p>
+
+      <p><strong>1. Frozen fixture tests.</strong> Save representative HTML pages to <code>tests/fixtures/</code> and commit them. Tests parse these fixtures instead of hitting the live site. This catches regressions when I change spider code, and decouples CI from network availability:</p>
+
+      <pre><code># tests/test_recipe_spider.py
+FIXTURE_DIR = Path(__file__).parent / 'fixtures'
+
+class RecipeSpiderRegressionTest(TestCase):
+    def test_category_listing(self):
+        with open(FIXTURE_DIR / 'category_page1.html') as f:
+            response = HtmlResponse(url='...', body=f.read().encode('utf-8'))
+        spider = RecipeSpider()
+        results = list(spider.parse_category(response, category='Antipasti'))
+        self.assertTrue(len(results) > 0)
+        for result in results:
+            self.assertIn('recipes', result.url)
+
+    def test_recipe_detail(self):
+        with open(FIXTURE_DIR / 'recipe_detail.html') as f:
+            response = HtmlResponse(url='...', body=f.read().encode('utf-8'))
+        spider = RecipeSpider()
+        results = list(spider.parse_recipe(response, category='Primi'))
+        self.assertEqual(results[0]['title'], 'Risotto allo zafferano')
+        self.assertEqual(len(results[0]['ingredienti']), 10)
+        self.assertEqual(results[0]['difficulty'], 'Media')</code></pre>
+
+      <p><strong>2. Contract tests.</strong> Assert that every <code>RecipeItem</code> and <code>IngredientInfoItem</code> yielded by a spider has all required fields populated:</p>
+
+      <pre><code>class RecipeItemContractTest(TestCase):
+    def test_all_fields_populated(self):
+        spider = RecipeSpider()
+        html = open(FIXTURE_DIR / 'recipe_detail.html').read()
+        response = HtmlResponse(url='...', body=html.encode('utf-8'))
+        item = list(spider.parse_recipe(response, category='Primi'))[0]
+        
+        required_fields = ['title', 'url', 'image_url', 'ingredienti', 
+                          'steps', 'category', 'difficulty', 'prep_time',
+                          'cook_time', 'servings']
+        for field in required_fields:
+            self.assertIn(field, item)
+            self.assertIsNotNone(item[field])</code></pre>
+
+      <p><strong>3. Schema change detector.</strong> If the target site changes their HTML (e.g., they rename <code>dd.recipe-ingredient</code> to <code>dd.ingredient-list</code>), my selectors break silently &mdash; I'd still get items, but with empty ingredient lists. A schema test catches this:</p>
+
+      <pre><code>class RecipeSchemaTest(TestCase):
+    def test_selectors_still_valid(self):
+        """Fetch a live page and verify selectors find expected elements."""
+        # This test hits the real site — run it weekly, not on every commit
+        spider = RecipeSpider()
+        response = fetch_live('https://example.com/risotto.html')
+        item = list(spider.parse_recipe(response, category='Primi'))[0]
+        
+        self.assertTrue(len(item['ingredienti']) >= 3, 
+            f"Expected >=3 ingredients, got {len(item['ingredienti'])}. "
+            "Selectors may have broken.")
+        self.assertTrue(len(item['steps']) >= 2,
+            f"Expected >=2 steps, got {len(item['steps'])}. "
+            "Selectors may have broken.")</code></pre>
+
+      <p><strong>4. Category classification snapshot.</strong> Store a list of known ingredient&rarr;category mappings and assert they don't change unexpectedly:</p>
+
+      <pre><code>KNOWN_CLASSIFICATIONS = {
+    'Salmone': 'Pesce',
+    'Pollo': 'Carni',
+    'Melanzane': 'Verdure',  # Was Frutta before the bug fix
+    'Fagioli': 'Legumi',     # Was Verdure before the bug fix
+    'Rana pescatrice': 'Pesce',  # Was Carni before the bug fix
+}
+
+class CategoryRegressionTest(TestCase):
+    def test_known_classifications_stable(self):
+        for name, expected in KNOWN_CLASSIFICATIONS.items():
+            result = classify_ingredient(name)
+            self.assertEqual(result, expected,
+                f"classify_ingredient('{name}') returned '{result}', expected '{expected}'")</code></pre>
+
+      <p>This test prevents a keyword change from silently regressing "Rana pescatrice" back to Frutta. Every time I add a new keyword, I add it to <code>KNOWN_CLASSIFICATIONS</code>.</p>
+
+      <p><strong>5. Pipeline integration test.</strong> Feed a known <code>RecipeItem</code> through the Django pipeline and verify it creates/updates the database correctly:</p>
+
+      <pre><code>class RecipePipelineTest(TestCase):
+    def test_update_or_create(self):
+        pipeline = RecipePipeline()
+        item = RecipeItem(
+            title='Test Recipe',
+            url='https://example.com/test',
+            category='Primi',
+            ingredienti=['Pasta 400g'],
+            steps=['Boil water'],
+            difficulty='Facile',
+            prep_time='10 min',
+            cook_time='15 min',
+            servings=4,
+            image_url='',
+        )
+        pipeline.process_item(item, None)
+        
+        recipe = Recipe.objects.get(url='https://example.com/test')
+        self.assertEqual(recipe.title, 'Test Recipe')
+        self.assertEqual(recipe.ingredienti, ['Pasta 400g'])
+        
+        # Run again — should update, not duplicate
+        item['title'] = 'Updated Test Recipe'
+        pipeline.process_item(item, None)
+        self.assertEqual(Recipe.objects.filter(url='https://example.com/test').count(), 1)
+        recipe.refresh_from_db()
+        self.assertEqual(recipe.title, 'Updated Test Recipe')</code></pre>
+
+      <hr>
+
+      <h2>The Final Architecture</h2>
+
+      <pre><code>scrapy_spider/
+  settings.py          # ROBOTSTXT_OBEY, AUTOTHROTTLE, honest User-Agent, DJANGO_ALLOW_ASYNC_UNSAFE
+  items.py             # RecipeItem, IngredientInfoItem — data contracts
+  pipelines.py         # RecipePipeline, DjangoIngredientPipeline, classify_ingredient()
+  spiders/
+    recipes.py         # RecipeSpider — extraction only, no DB calls
+    ingredients.py     # IngredientSpider — extraction only, section-based parsing
+run_crawler.py          # Entry point
+recipes/tests.py        # 42 unit tests (classification, parsing, helpers, contracts)</code></pre>
+
+      <p>Run it:</p>
+
+      <pre><code>python3 run_crawler.py recipes       # Crawl all recipe categories
+python3 run_crawler.py ingredients   # Crawl ingredient encyclopedia
+python3 run_crawler.py all           # Crawl everything
+python3 manage.py test recipes.tests # Run 42 unit tests</code></pre>
+
+      <hr>
+
+      <h2>What I Gained</h2>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>Hand-Rolled</th>
+            <th>Scrapy</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>robots.txt compliance</td>
+            <td>None</td>
+            <td>Automatic (<code>ROBOTSTXT_OBEY = True</code>)</td>
+          </tr>
+          <tr>
+            <td>Concurrency</td>
+            <td>5 threads (<code>ThreadPoolExecutor</code>)</td>
+            <td>16+ async requests</td>
+          </tr>
+          <tr>
+            <td>Rate limiting</td>
+            <td><code>time.sleep(0.5)</code> hardcoded</td>
+            <td><code>AUTOTHROTTLE</code> adapts to server response</td>
+          </tr>
+          <tr>
+            <td>Retry logic</td>
+            <td>Manual exponential backoff</td>
+            <td><code>RETRY_TIMES = 5</code>, configurable</td>
+          </tr>
+          <tr>
+            <td>Pagination limit</td>
+            <td><code>MAX_PAGES = 15</code></td>
+            <td>Follows links until no more pages</td>
+          </tr>
+          <tr>
+            <td>User-Agent</td>
+            <td>Spoofed Chrome</td>
+            <td>Honest bot identification</td>
+          </tr>
+          <tr>
+            <td>Separation of concerns</td>
+            <td>Everything in one file</td>
+            <td>Items / Spiders / Pipelines</td>
+          </tr>
+          <tr>
+            <td>Category classification</td>
+            <td>Embedded in crawler, buggy</td>
+            <td>Centralized, 44 unit tests</td>
+          </tr>
+          <tr>
+            <td>Debugging</td>
+            <td><code>print()</code> statements</td>
+            <td><code>scrapy shell &lt;url&gt;</code> for interactive testing</td>
+          </tr>
+          <tr>
+            <td>Deduplication</td>
+            <td>Pre-load all DB URLs into set</td>
+            <td><code>update_or_create</code> in pipeline</td>
+          </tr>
+          <tr>
+            <td>Resume after crash</td>
+            <td>Start over</td>
+            <td><code>JOBDIR</code> for resumable crawls</td>
+          </tr>
+          <tr>
+            <td>Django async conflict</td>
+            <td>N/A</td>
+            <td><code>DJANGO_ALLOW_ASYNC_UNSAFE = 'true'</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <hr>
+
+      <h2>Key Takeaways</h2>
+
+      <ol>
+        <li><strong>Use a framework for production scraping.</strong> <code>requests</code> + <code>BeautifulSoup</code> is fine for 10 pages. For 848 recipes and 230 ingredients across paginated categories, Scrapy's architecture pays for itself on day one.</li>
+        <li><strong>Respect robots.txt.</strong> It's not optional. <code>ROBOTSTXT_OBEY = True</code> and an honest User-Agent prevent accidental abuse and make you a good internet citizen.</li>
+        <li><strong>Don't hardcode limits.</strong> Crawl until the site stops giving you pages. My <code>MAX_PAGES = 15</code> was silently dropping data.</li>
+        <li><strong><code>xpath('string()')</code> over <code>::text</code>.</strong> If your source HTML has nested elements (<code>&lt;strong&gt;</code>, <code>&lt;em&gt;</code>, <code>&lt;span&gt;</code> inside <code>&lt;a&gt;</code> or <code>&lt;li&gt;</code>), <code>::text</code> silently drops text. <code>xpath('string()')</code> gets everything. I caught this during migration testing.</li>
+        <li><strong>Rule ordering matters for substring classifiers.</strong> <code>"mela"</code> matches <code>"Melanzane"</code>. <code>"fagiol"</code> matches <code>"Fagioli"</code>. Place your rules in specificity order and write regression tests.</li>
+        <li><strong>Test spiders with fixtures, not live sites.</strong> Commit representative HTML pages. Test parsing against those. Reserve live-site tests for weekly CI, not every commit.</li>
+        <li><strong>Separate extraction from persistence.</strong> Spiders parse HTML and yield items. Pipelines save to databases. This means you can test extraction without a database, and swap databases without touching the spider.</li>
+        <li><strong>Add contract tests.</strong> Assert that every item has all required fields. If the target site changes <code>dd.recipe-ingredient</code> to <code>dd.ingredient-list</code>, you'll get empty ingredient lists. A contract test catches this before it reaches production.</li>
+      </ol>
+    </article>
+  </main>
+
+  <footer id="footer-slot"></footer>
+
+  <script src="../js/site.js"></script>
+</body>
+</html>
