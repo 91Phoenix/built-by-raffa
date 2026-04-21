@@ -56,14 +56,9 @@ nav {
   margin: 0 auto;
   padding: 2rem 1.5rem 0;
   display: flex;
-  justify-content: center;
+  justify-content: space-between;
   align-items: center;
-  position: relative;
-}
-
-nav .logo-icon-link {
-  position: absolute;
-  left: 1.5rem;
+  gap: 0.75rem;
 }
 
 nav .logo-icon-link:hover .logo-icon {
@@ -84,8 +79,6 @@ nav .logo-text:hover {
 }
 
 nav .nav-right {
-  position: absolute;
-  right: 1.5rem;
   display: flex;
   align-items: center;
   gap: 1.25rem;
@@ -138,11 +131,10 @@ main {
 }
 
 .logo-icon {
-  height: 12rem;
-  width: 12rem;
+  height: clamp(5rem, 12vw, 10rem);
+  width: clamp(5rem, 12vw, 10rem);
   border-radius: 8px;
   object-fit: contain;
-}
 }
 
 .hero p {
@@ -385,4 +377,9 @@ footer .footer-links {
   nav { padding: 1.5rem 1rem 0; }
   main { padding: 2rem 1rem 4rem; }
   .post-card { padding: 1.25rem; }
+  nav { flex-wrap: wrap; gap: 0.5rem; }
+  .logo-icon { height: 5rem; width: 5rem; }
+  nav .logo-text { font-size: 1.4rem; }
+  nav .nav-right { gap: 0.75rem; }
+  nav .nav-link { font-size: 0.8rem; }
 }
