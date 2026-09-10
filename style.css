@@ -383,3 +383,64 @@ footer .footer-links {
   nav .nav-right { gap: 0.75rem; }
   nav .nav-link { font-size: 0.8rem; }
 }
+/* ---- figures & inline SVG diagrams ---- */
+
+article figure {
+  margin: 1.75rem 0;
+}
+
+article figure .diagram {
+  width: 100%;
+  height: auto;
+  display: block;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+article figcaption {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-top: 0.6rem;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.d-box { fill: var(--surface); stroke: var(--border); stroke-width: 1.2; }
+.d-box-soft { fill: var(--code-bg); stroke: var(--border); stroke-width: 1.2; }
+.d-box-accent { fill: var(--accent); stroke: none; }
+.d-box-outline { fill: none; stroke: var(--accent); stroke-width: 1.4; }
+.d-text { fill: var(--text); font-size: 12px; }
+.d-text-b { fill: var(--text); font-size: 12px; font-weight: 600; }
+.d-text-sm { fill: var(--text-muted); font-size: 10.5px; }
+.d-text-inv { fill: #ffffff; font-size: 12px; font-weight: 600; }
+.d-text-accent { fill: var(--accent); font-size: 11px; font-weight: 600; }
+.d-mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 10.5px; fill: var(--text); }
+.d-line { stroke: var(--text-muted); stroke-width: 1.3; fill: none; }
+.d-line-accent { stroke: var(--accent); stroke-width: 1.6; fill: none; }
+.d-dash { stroke-dasharray: 4 3; }
+.d-arrowhead { fill: var(--text-muted); }
+.d-arrowhead-accent { fill: var(--accent); }
+.d-good { fill: #2e9e5b; }
+.d-bad { fill: #d03b3b; }
+.d-warn { fill: #e0a100; }
+
+article .callout {
+  border-left: 3px solid var(--accent);
+  background: var(--surface);
+  border-radius: 0 8px 8px 0;
+  padding: 1rem 1.25rem;
+  margin: 1.5rem 0;
+  box-shadow: var(--shadow);
+}
+
+article .callout p:last-child {
+  margin-bottom: 0;
+}
+
+article .callout .callout-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}

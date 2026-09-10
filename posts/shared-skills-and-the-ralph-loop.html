@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shared Skills, One Sync Script, and a Loop That Ships Tickets &mdash; Bradicode</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <nav id="nav-slot"></nav>
+
+  <main>
+    <a href="index.html" class="back-link">&larr; All posts</a>
+
+    <article>
+      <div class="post-header">
+        <h1>Shared Skills, One Sync Script, and a Loop That Ships Tickets</h1>
+        <div class="post-meta">
+          <span>September 2026</span>
+          <span class="dot">&middot;</span>
+          <span>24 min read</span>
+        </div>
+      </div>
+
+      <p>Every developer on a team now has an AI coding agent in the terminal. That is not the interesting part. The interesting part is that every one of those agents, left alone, makes up its own house style: where migrations live, which branch to cut from, how to name a commit, whether a query gets a test. Ten developers, ten agents, ten opinions &mdash; and the opinions drift every week.</p>
+
+      <p>Over the summer we built a small system to fix that. It has three pieces: a catalog of <strong>skills</strong> that pin down how things are done, a <strong>sync script</strong> that puts the same catalog on every machine within the hour, and the <strong>Ralph Loop</strong>, an orchestrator that takes a Jira epic and works its tickets end to end &mdash; implement, push, review, acceptance-test, address comments &mdash; using those very skills. This post is about how the three fit together and the design decisions that came out of watching them fail.</p>
+
+      <hr>
+
+      <h2>Part 1 &mdash; Skills: The Standard, Written Down for Agents</h2>
+
+      <p>A skill is a Markdown file, <code>SKILL.md</code>, with a YAML frontmatter. The agent loads it on demand when the task matches its description, or when you type its name as a slash command. That is the whole mechanism. What makes it powerful is that it turns tribal knowledge into something an agent reads <em>at the moment it is about to do the thing</em>.</p>
+
+      <pre><code>---
+name: java-db-migrations
+description: Use when work on a Java service touches the Postgres schema —
+  new table/column/index/sequence, ALTER, seed data, a new service database.
+  The DDL never lives in the service repo; it goes to the migrations repo
+  (Flyway, trunk `development`). Also for cutting tickets that involve
+  schema work. DynamoDB is java-dynamodb; JPA entity code is java-jpa-persistence.
+---
+
+## Where the DDL goes
+...</code></pre>
+
+      <p>Notice what that description does. It says <em>when</em> to use the skill (a schema change), it names the rule that people got wrong most often (DDL never lives in the service repo, and the migrations repo develops on <code>development</code>, not <code>main</code>), and it routes neighbouring cases to their own skills. The agent reads only descriptions until one fires, so a good description is most of the work.</p>
+
+      <h3>The catalog</h3>
+
+      <p>We have 51 skills today, grouped by what they do. The folders are only for humans browsing the repo; the agent discovers skills flat.</p>
+
+      <figure>
+        <svg class="diagram" viewBox="0 0 720 300" role="img" aria-label="Skills catalog grouped in six categories">
+          <defs>
+            <marker id="arr-cat" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+          </defs>
+          <!-- header -->
+          <rect x="250" y="10" width="220" height="36" rx="8" class="d-box-accent"/>
+          <text x="360" y="33" text-anchor="middle" class="d-text-inv">skills/ &mdash; 51 SKILL.md files</text>
+
+          <!-- six columns -->
+          <g>
+            <rect x="10" y="80" width="108" height="200" rx="8" class="d-box"/>
+            <text x="64" y="102" text-anchor="middle" class="d-text-b">plan · 7</text>
+            <text x="64" y="124" text-anchor="middle" class="d-text-sm">grilling</text>
+            <text x="64" y="140" text-anchor="middle" class="d-text-sm">grill-with-docs</text>
+            <text x="64" y="156" text-anchor="middle" class="d-text-sm">to-spec</text>
+            <text x="64" y="172" text-anchor="middle" class="d-text-sm">to-tickets</text>
+            <text x="64" y="188" text-anchor="middle" class="d-text-sm">wayfinder</text>
+            <text x="64" y="204" text-anchor="middle" class="d-text-sm">triage</text>
+          </g>
+          <g>
+            <rect x="128" y="80" width="108" height="200" rx="8" class="d-box"/>
+            <text x="182" y="102" text-anchor="middle" class="d-text-b">design · 4</text>
+            <text x="182" y="124" text-anchor="middle" class="d-text-sm">codebase-design</text>
+            <text x="182" y="140" text-anchor="middle" class="d-text-sm">domain-modeling</text>
+            <text x="182" y="156" text-anchor="middle" class="d-text-sm">prototype</text>
+            <text x="182" y="172" text-anchor="middle" class="d-text-sm">improve-arch</text>
+          </g>
+          <g>
+            <rect x="246" y="80" width="108" height="200" rx="8" class="d-box-soft"/>
+            <text x="300" y="102" text-anchor="middle" class="d-text-b">build · 25</text>
+            <text x="300" y="124" text-anchor="middle" class="d-text-sm">tdd</text>
+            <text x="300" y="140" text-anchor="middle" class="d-text-sm">spring-boot-style</text>
+            <text x="300" y="156" text-anchor="middle" class="d-text-sm">jpa-persistence</text>
+            <text x="300" y="172" text-anchor="middle" class="d-text-sm">db-migrations</text>
+            <text x="300" y="188" text-anchor="middle" class="d-text-sm">messaging-outbox</text>
+            <text x="300" y="204" text-anchor="middle" class="d-text-sm">dynamodb</text>
+            <text x="300" y="220" text-anchor="middle" class="d-text-sm">react-components</text>
+            <text x="300" y="236" text-anchor="middle" class="d-text-sm">design-tokens</text>
+            <text x="300" y="252" text-anchor="middle" class="d-text-sm">maestro-e2e-test</text>
+            <text x="300" y="268" text-anchor="middle" class="d-text-sm">&hellip; +16</text>
+          </g>
+          <g>
+            <rect x="364" y="80" width="108" height="200" rx="8" class="d-box"/>
+            <text x="418" y="102" text-anchor="middle" class="d-text-b">quality · 7</text>
+            <text x="418" y="124" text-anchor="middle" class="d-text-sm">code-review</text>
+            <text x="418" y="140" text-anchor="middle" class="d-text-sm">diagnosing-bugs</text>
+            <text x="418" y="156" text-anchor="middle" class="d-text-sm">resolving-conflicts</text>
+            <text x="418" y="172" text-anchor="middle" class="d-text-sm">actor-attribution</text>
+            <text x="418" y="188" text-anchor="middle" class="d-text-sm">collaudo-locale</text>
+            <text x="418" y="204" text-anchor="middle" class="d-text-sm">terraform-hygiene</text>
+          </g>
+          <g>
+            <rect x="482" y="80" width="108" height="200" rx="8" class="d-box"/>
+            <text x="536" y="102" text-anchor="middle" class="d-text-b">knowledge · 5</text>
+            <text x="536" y="124" text-anchor="middle" class="d-text-sm">functional-specs</text>
+            <text x="536" y="140" text-anchor="middle" class="d-text-sm">repo-trunks</text>
+            <text x="536" y="156" text-anchor="middle" class="d-text-sm">research</text>
+            <text x="536" y="172" text-anchor="middle" class="d-text-sm">teach</text>
+            <text x="536" y="188" text-anchor="middle" class="d-text-sm">writing-great-skills</text>
+          </g>
+          <g>
+            <rect x="600" y="80" width="108" height="200" rx="8" class="d-box"/>
+            <text x="654" y="102" text-anchor="middle" class="d-text-b">meta · 3</text>
+            <text x="654" y="124" text-anchor="middle" class="d-text-sm">ask-matt (router)</text>
+            <text x="654" y="140" text-anchor="middle" class="d-text-sm">handoff</text>
+            <text x="654" y="156" text-anchor="middle" class="d-text-sm">setup</text>
+          </g>
+          <!-- connectors -->
+          <line x1="360" y1="46" x2="360" y2="62" class="d-line"/>
+          <line x1="64" y1="62" x2="654" y2="62" class="d-line"/>
+          <line x1="64" y1="62" x2="64" y2="80" class="d-line" marker-end="url(#arr-cat)"/>
+          <line x1="182" y1="62" x2="182" y2="80" class="d-line" marker-end="url(#arr-cat)"/>
+          <line x1="300" y1="62" x2="300" y2="80" class="d-line" marker-end="url(#arr-cat)"/>
+          <line x1="418" y1="62" x2="418" y2="80" class="d-line" marker-end="url(#arr-cat)"/>
+          <line x1="536" y1="62" x2="536" y2="80" class="d-line" marker-end="url(#arr-cat)"/>
+          <line x1="654" y1="62" x2="654" y2="80" class="d-line" marker-end="url(#arr-cat)"/>
+        </svg>
+        <figcaption>The catalog. Half of it is <code>build/</code>: one skill per layer of a Spring Boot service (style, JPA, migrations, REST, security, outbox, DynamoDB, files, audit) plus the frontend stack. The folders are for browsing; the installer flattens them.</figcaption>
+      </figure>
+
+      <p>The <code>build/</code> skills are where the standard actually lives. Each one covers a layer of a service and ships the rule <em>and</em> the test that proves it. <code>java-jpa-persistence</code> says every new entity gets a DTO and mapper, and every new query gets a test against a real Postgres container &mdash; and points at <code>java-persistence-testing</code> for how. <code>java-messaging-outbox</code> encodes the transactional outbox and idempotent consumers. <code>java-security-authorization</code> encodes fail-closed data scoping. Before these existed, each of those rules lived in a senior developer's head and surfaced in code review, late.</p>
+
+      <p>Two knowledge skills deserve a mention because they fix problems tools cannot:</p>
+
+      <ul>
+        <li><strong><code>repo-trunks</code></strong> holds the <em>verified</em> trunk per repository. Bitbucket's default branch and branching model are stale on several of our repos: the migrations repo develops on <code>development</code> while both settings say <code>main</code>. An agent that trusts the platform cuts the wrong branch. An agent that reads the skill does not.</li>
+        <li><strong><code>functional-specs</code></strong> sends the agent to a local checkout of our functional-specs repository &mdash; the specs, the Architecture Decision Records behind them, and a glossary per domain &mdash; <em>before</em> it plans a feature. The instruction is blunt: build to those decisions instead of re-deciding them. If an ADR contradicts the ticket, follow the ADR and say so.</li>
+      </ul>
+
+      <h3>What makes a skill good</h3>
+
+      <p>We wrote a skill about writing skills. Its opening line is the thesis: <em>a skill exists to wrangle determinism out of a stochastic system</em>. The virtue is <strong>predictability</strong> &mdash; the agent taking the same <em>process</em> every run, not producing the same output. A few principles from it that changed how we write them:</p>
+
+      <ul>
+        <li><strong>The description is a list of triggers, not a summary.</strong> Every word sits in the context window every turn, so a description is pruned harder than the body. One trigger per branch; synonyms are duplication.</li>
+        <li><strong>Model-invoked vs user-invoked is a cost decision.</strong> A model-invoked skill keeps its description in context (context load) so the agent can fire it alone. A user-invoked one (<code>disable-model-invocation: true</code>) costs nothing per turn but <em>you</em> have to remember it exists (cognitive load). When the user-invoked ones pile up, you add a <strong>router skill</strong> that names the others.</li>
+        <li><strong>Every step ends on a checkable completion criterion.</strong> "Every modified model accounted for", not "produce a change list". A vague criterion invites the agent to declare victory early.</li>
+        <li><strong>Progressive disclosure.</strong> Push what only some branches need into a sibling file behind a pointer, so <code>SKILL.md</code> stays legible. The pointer's <em>wording</em> decides whether the agent follows it.</li>
+        <li><strong>Hunt no-ops sentence by sentence.</strong> If deleting a sentence changes nothing about what the agent does, delete the sentence rather than trim it.</li>
+      </ul>
+
+      <h3>Output styles and the always-on plugin</h3>
+
+      <p>Alongside skills, the repo ships two Claude Code <em>output styles</em> (<code>Concise</code> and <code>Rundown</code>) and a vendored plugin, <a href="https://github.com/JuliusBrussee/caveman" target="_blank" rel="noopener noreferrer">caveman</a>, that compresses the agent's prose by roughly 65% of output tokens while keeping technical content intact. The reason to know about output styles is economic: an output style replaces part of the agent's own system prompt, so it costs nothing per turn, whereas a rule in <code>CLAUDE.md</code> is re-sent with every message. The reason caveman is a <em>plugin</em> and not a skill is that the always-on behaviour needs hooks (<code>SessionStart</code>, <code>UserPromptSubmit</code>); a bare <code>SKILL.md</code> would only give you an on-demand command.</p>
+
+      <hr>
+
+      <h2>Part 2 &mdash; The Sync Script: Same Catalog on Every Machine, Within the Hour</h2>
+
+      <p>A catalog nobody installs is a wiki. The second piece is a single Bash script, <code>bs-skills-sync.sh</code>, that sets up a machine and then keeps it current.</p>
+
+      <pre><code>git clone &lt;the skills repo&gt;
+cd bs-agents-skills
+./scripts/bs-skills-sync.sh install     # prereqs + cron + first sync
+
+./scripts/bs-skills-sync.sh status      # branch, origin/main, installed SHA, tools, cron
+./scripts/bs-skills-sync.sh sync        # update now (only if origin/main moved)
+./scripts/bs-skills-sync.sh sync --force
+./scripts/bs-skills-sync.sh cursor add . # register a Cursor project</code></pre>
+
+      <p><code>install</code> does a lot for one command. It installs or upgrades the prerequisites (git, Node.js for the plugin hooks, cron) with whatever package manager it finds &mdash; brew, dnf, apt, pacman, zypper. It adds an hourly cron job. It runs the first sync immediately.</p>
+
+      <figure>
+        <svg class="diagram" viewBox="0 0 720 340" role="img" aria-label="Hourly sync flow from origin/main to every machine">
+          <defs>
+            <marker id="arr-sync" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+            <marker id="arr-sync-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+
+          <!-- cron -->
+          <rect x="10" y="20" width="130" height="44" rx="8" class="d-box-soft"/>
+          <text x="75" y="38" text-anchor="middle" class="d-text-b">cron, hourly</text>
+          <text x="75" y="54" text-anchor="middle" class="d-text-sm">runs the pinned copy</text>
+
+          <!-- fetch -->
+          <rect x="180" y="20" width="150" height="44" rx="8" class="d-box"/>
+          <text x="255" y="38" text-anchor="middle" class="d-text-b">git fetch</text>
+          <text x="255" y="54" text-anchor="middle" class="d-text-sm">did origin/main move?</text>
+          <line x1="140" y1="42" x2="180" y2="42" class="d-line" marker-end="url(#arr-sync)"/>
+
+          <!-- specs -->
+          <rect x="370" y="20" width="160" height="44" rx="8" class="d-box"/>
+          <text x="450" y="38" text-anchor="middle" class="d-text-b">functional-specs</text>
+          <text x="450" y="54" text-anchor="middle" class="d-text-sm">pull --ff-only, every time</text>
+          <line x1="330" y1="42" x2="370" y2="42" class="d-line" marker-end="url(#arr-sync)"/>
+
+          <!-- no -->
+          <text x="255" y="90" text-anchor="middle" class="d-text-sm">no → log "already at latest", done</text>
+
+          <!-- yes: extract -->
+          <line x1="255" y1="64" x2="255" y2="118" class="d-line-accent d-dash"/>
+          <text x="268" y="112" class="d-text-accent">yes</text>
+          <rect x="130" y="120" width="250" height="44" rx="8" class="d-box-outline"/>
+          <text x="255" y="138" text-anchor="middle" class="d-text-b">extract origin/main</text>
+          <text x="255" y="154" text-anchor="middle" class="d-text-sm">into ~/.claude/.bs-agents-skills-src — never the working tree</text>
+
+          <!-- fan out -->
+          <line x1="255" y1="164" x2="255" y2="186" class="d-line-accent"/>
+          <line x1="60" y1="186" x2="660" y2="186" class="d-line-accent"/>
+
+          <g>
+            <line x1="60" y1="186" x2="60" y2="210" class="d-line-accent" marker-end="url(#arr-sync-a)"/>
+            <rect x="10" y="212" width="100" height="52" rx="8" class="d-box"/>
+            <text x="60" y="232" text-anchor="middle" class="d-text-b">skills</text>
+            <text x="60" y="248" text-anchor="middle" class="d-text-sm">flat, pruned</text>
+          </g>
+          <g>
+            <line x1="180" y1="186" x2="180" y2="210" class="d-line-accent" marker-end="url(#arr-sync-a)"/>
+            <rect x="125" y="212" width="110" height="52" rx="8" class="d-box"/>
+            <text x="180" y="232" text-anchor="middle" class="d-text-b">plugin hooks</text>
+            <text x="180" y="248" text-anchor="middle" class="d-text-sm">settings.json</text>
+          </g>
+          <g>
+            <line x1="300" y1="186" x2="300" y2="210" class="d-line-accent" marker-end="url(#arr-sync-a)"/>
+            <rect x="245" y="212" width="110" height="52" rx="8" class="d-box"/>
+            <text x="300" y="232" text-anchor="middle" class="d-text-b">output styles</text>
+            <text x="300" y="248" text-anchor="middle" class="d-text-sm">default only if unset</text>
+          </g>
+          <g>
+            <line x1="420" y1="186" x2="420" y2="210" class="d-line-accent" marker-end="url(#arr-sync-a)"/>
+            <rect x="365" y="212" width="110" height="52" rx="8" class="d-box"/>
+            <text x="420" y="232" text-anchor="middle" class="d-text-b">MCP servers</text>
+            <text x="420" y="248" text-anchor="middle" class="d-text-sm">Jira + Bitbucket, user scope</text>
+          </g>
+          <g>
+            <line x1="540" y1="186" x2="540" y2="210" class="d-line-accent" marker-end="url(#arr-sync-a)"/>
+            <rect x="485" y="212" width="110" height="52" rx="8" class="d-box"/>
+            <text x="540" y="232" text-anchor="middle" class="d-text-b">agent tools</text>
+            <text x="540" y="248" text-anchor="middle" class="d-text-sm">bs-implement on PATH</text>
+          </g>
+          <g>
+            <line x1="660" y1="186" x2="660" y2="210" class="d-line-accent" marker-end="url(#arr-sync-a)"/>
+            <rect x="605" y="212" width="110" height="52" rx="8" class="d-box"/>
+            <text x="660" y="232" text-anchor="middle" class="d-text-b">Cursor rules</text>
+            <text x="660" y="248" text-anchor="middle" class="d-text-sm">.cursor/rules/*.mdc</text>
+          </g>
+
+          <text x="360" y="305" text-anchor="middle" class="d-text-sm">Everything below the dashed line is installed from origin/main. Your checkout is fast-forwarded only as a courtesy, and only if it is on main and clean.</text>
+        </svg>
+        <figcaption>One sync. The fetch is cheap and runs every hour; the install only runs when <code>origin/main</code> has actually moved.</figcaption>
+      </figure>
+
+      <h3>Install from <code>origin/main</code>, never from the working tree</h3>
+
+      <p>This is the rule that came out of a failure. The first version of the script ran <code>git pull</code> in your checkout and installed from there. If you were developing a skill on a feature branch, the pull found no new commits and reported "already at latest" &mdash; and once your PR merged and the remote branch was deleted, the pull failed outright. Machines silently stopped receiving skills for hours, and nobody noticed because the log said everything was fine.</p>
+
+      <p>Now sync extracts <code>origin/main</code> into a private directory under <code>~/.claude</code> and installs from there. You can be on a feature branch, with a dirty tree, mid-rebase, and you still receive every colleague's merged skill on the hour. And your half-finished skill never gets installed behind your back. The cron job itself runs the <em>pinned</em> copy of the script, not your checkout's, so a branch that predates a sync fix cannot stop you from receiving the fix.</p>
+
+      <h3>The small decisions that keep it boring</h3>
+
+      <ul>
+        <li><strong>Pruning is scoped.</strong> A skill that a previous sync installed and <code>origin/main</code> no longer has is removed. A skill you wrote by hand in <code>~/.claude/skills</code> is left alone. Same for output styles.</li>
+        <li><strong>Defaults do not overwrite choices.</strong> The default output style is set only when the key is absent in <code>settings.json</code>. A machine that already chose keeps its choice.</li>
+        <li><strong>The specs checkout is a separate copy.</strong> The agent's copy of the functional-specs repo is fast-forwarded hourly and must never carry in-progress spec work. You author specs in your own clone.</li>
+        <li><strong>Cursor gets the same catalog.</strong> Cursor has no global rules directory, so the script registers projects and generates <code>.cursor/rules/*.mdc</code>: each <code>SKILL.md</code> becomes an <em>Agent Requested</em> rule with the same description. Registered projects are regenerated on every sync.</li>
+        <li><strong>Secrets stay at user scope.</strong> The Jira and Bitbucket MCP servers are registered with <code>--scope user</code>. Project scope would write the gateway key into a checked-in <code>.mcp.json</code>.</li>
+        <li><strong>There is deliberately no cron job for the loop.</strong> An unattended loop would claim tickets, push branches and open PRs under one developer's credentials from a laptop that sleeps mid-run. The launcher is on <code>PATH</code>; a human starts it.</li>
+      </ul>
+
+      <hr>
+
+      <h2>Part 3 &mdash; The Ralph Loop: An Epic In, Reviewed PRs Out</h2>
+
+      <p>The third piece is the one that made the first two necessary. The Ralph Loop is an autonomous ticket implementer. You give it a Jira epic. For up to five hours it works the epic's <em>ready frontier</em>: every unblocked, unclaimed ticket gets a fresh headless agent session that implements it test-first, then the orchestrator pushes behind the repo's own build gate, opens a pull request, has a second session review it, a third acceptance-test it against the local cluster, a fourth address the comments &mdash; and leaves the PR open for a human to merge. When a PR merges, the loop closes the ticket, which unblocks downstream tickets, and keeps going.</p>
+
+      <p>It is about 3,500 lines of Python with zero runtime dependencies (it has to run on a stock macOS or Fedora <code>python3</code> with nothing installed), and 338 tests. What follows is the architecture and the scars.</p>
+
+      <h3>The outer loop</h3>
+
+      <figure>
+        <svg class="diagram" viewBox="0 0 720 250" role="img" aria-label="Outer polling loop of the Ralph Loop">
+          <defs>
+            <marker id="arr-outer" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+          </defs>
+          <rect x="10" y="20" width="110" height="48" rx="8" class="d-box-soft"/>
+          <text x="65" y="40" text-anchor="middle" class="d-text-b">preflight</text>
+          <text x="65" y="56" text-anchor="middle" class="d-text-sm">git auth, MCP, tools</text>
+
+          <line x1="120" y1="44" x2="150" y2="44" class="d-line" marker-end="url(#arr-outer)"/>
+
+          <!-- loop box -->
+          <rect x="150" y="10" width="560" height="200" rx="10" class="d-box-outline d-dash"/>
+          <text x="165" y="28" class="d-text-accent">every 300 s, for up to 5 h</text>
+
+          <rect x="165" y="44" width="120" height="48" rx="8" class="d-box"/>
+          <text x="225" y="63" text-anchor="middle" class="d-text-b">detect merges</text>
+          <text x="225" y="79" text-anchor="middle" class="d-text-sm">close ticket, rebase siblings</text>
+
+          <line x1="285" y1="68" x2="305" y2="68" class="d-line" marker-end="url(#arr-outer)"/>
+          <rect x="305" y="44" width="110" height="48" rx="8" class="d-box"/>
+          <text x="360" y="63" text-anchor="middle" class="d-text-b">watchdog</text>
+          <text x="360" y="79" text-anchor="middle" class="d-text-sm">kill stuck pipelines</text>
+
+          <line x1="415" y1="68" x2="435" y2="68" class="d-line" marker-end="url(#arr-outer)"/>
+          <rect x="435" y="44" width="120" height="48" rx="8" class="d-box"/>
+          <text x="495" y="63" text-anchor="middle" class="d-text-b">fetch frontier</text>
+          <text x="495" y="79" text-anchor="middle" class="d-text-sm">epic children + blockers</text>
+
+          <line x1="555" y1="68" x2="575" y2="68" class="d-line" marker-end="url(#arr-outer)"/>
+          <rect x="575" y="44" width="120" height="48" rx="8" class="d-box"/>
+          <text x="635" y="63" text-anchor="middle" class="d-text-b">resync stale PRs</text>
+          <text x="635" y="79" text-anchor="middle" class="d-text-sm">ticket or specs moved?</text>
+
+          <line x1="635" y1="92" x2="635" y2="120" class="d-line" marker-end="url(#arr-outer)"/>
+          <rect x="455" y="122" width="240" height="48" rx="8" class="d-box-accent"/>
+          <text x="575" y="141" text-anchor="middle" class="d-text-inv">launch plan</text>
+          <text x="575" y="157" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:11px">one process per ready ticket, max 2 in flight</text>
+
+          <line x1="455" y1="146" x2="290" y2="146" class="d-line" marker-end="url(#arr-outer)"/>
+          <rect x="165" y="122" width="125" height="48" rx="8" class="d-box"/>
+          <text x="227" y="141" text-anchor="middle" class="d-text-b">idle reasons</text>
+          <text x="227" y="157" text-anchor="middle" class="d-text-sm">why nothing is grabbable</text>
+
+          <text x="430" y="196" text-anchor="middle" class="d-text-sm">ready = status Ready for Dev ∧ label ready-for-agent ∧ unassigned ∧ every blocker Done</text>
+
+          <text x="360" y="238" text-anchor="middle" class="d-text-sm">Each poll step is network-facing; a blip costs one poll, never the loop, and never a needs-human label.</text>
+        </svg>
+        <figcaption>The orchestrator polls Jira every five minutes. Nothing here trusts on-disk state over Bitbucket's: a PR merged by a human while no loop was running is discovered and its ticket closed on the next poll.</figcaption>
+      </figure>
+
+      <p>A ticket is <em>ready</em> when four things are true: status <code>Ready for Dev</code>, label <code>ready-for-agent</code>, unassigned, and every blocker Done. The blockers come from the union of two sources: Jira's real issue-link graph and a <code># Blocked by</code> heading in the description. An unknown blocker &mdash; a key in another project, a search that failed &mdash; counts as <em>not</em> done. An unresolvable dependency parks the child rather than freeing it.</p>
+
+      <div class="callout">
+        <div class="callout-label">Scar</div>
+        <p>Jira issue links are directional and the direction is easy to invert. On an issue, an <code>inwardIssue</code> entry sits at the link's inward end and pairs with the type's inward phrase: for "Blocks" that reads "this is blocked by other". So the blocker is the <em>inward</em> side. We read the outward side first. Every edge in the epic inverted, and the loop ran dependents before their prerequisites. It took two fixes; the docstring on that function is now longer than the function.</p>
+      </div>
+
+      <h3>The per-ticket pipeline</h3>
+
+      <p>Every phase is a <em>separate</em> headless <code>claude -p</code> invocation with a fresh context and a purpose-built prompt. The orchestrator never trusts an agent's prose claim of success; the only channel from a worker back to the orchestrator is a file on disk.</p>
+
+      <figure>
+        <svg class="diagram" viewBox="0 0 720 560" role="img" aria-label="Per-ticket pipeline state machine">
+          <defs>
+            <marker id="arr-pipe" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+            <marker id="arr-pipe-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+
+          <!-- left column: orchestrator steps; right column: agent sessions -->
+          <text x="130" y="18" text-anchor="middle" class="d-text-sm">orchestrator (Python)</text>
+          <text x="520" y="18" text-anchor="middle" class="d-text-sm">worker (fresh Claude session per phase)</text>
+          <line x1="330" y1="24" x2="330" y2="540" class="d-line d-dash" style="opacity:.5"/>
+
+          <!-- claim -->
+          <rect x="30" y="30" width="200" height="40" rx="8" class="d-box"/>
+          <text x="130" y="48" text-anchor="middle" class="d-text-b">claim ticket</text>
+          <text x="130" y="62" text-anchor="middle" class="d-text-sm">assign, → In Progress, comment</text>
+
+          <line x1="130" y1="70" x2="130" y2="86" class="d-line" marker-end="url(#arr-pipe)"/>
+          <rect x="30" y="88" width="200" height="40" rx="8" class="d-box"/>
+          <text x="130" y="106" text-anchor="middle" class="d-text-b">prepare workspace</text>
+          <text x="130" y="120" text-anchor="middle" class="d-text-sm">clone, feature/KEY from origin/trunk</text>
+
+          <!-- implement -->
+          <line x1="230" y1="108" x2="420" y2="150" class="d-line-accent" marker-end="url(#arr-pipe-a)"/>
+          <rect x="420" y="132" width="270" height="52" rx="8" class="d-box-accent"/>
+          <text x="555" y="152" text-anchor="middle" class="d-text-inv">1 · implement — /tdd</text>
+          <text x="555" y="170" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">reads ticket, specs, siblings · writes BUILD_OK or BUILD_FAIL</text>
+
+          <!-- push gate -->
+          <line x1="420" y1="166" x2="230" y2="200" class="d-line" marker-end="url(#arr-pipe)"/>
+          <rect x="30" y="182" width="200" height="52" rx="8" class="d-box"/>
+          <text x="130" y="200" text-anchor="middle" class="d-text-b">push &amp; verify</text>
+          <text x="130" y="214" text-anchor="middle" class="d-text-sm">no BUILD_OK → no push</text>
+          <text x="130" y="227" text-anchor="middle" class="d-text-sm">remote pipeline polled ≤ 20 min</text>
+
+          <!-- pipeline fix loop -->
+          <path d="M230,215 C300,215 330,250 420,250" class="d-line d-dash" marker-end="url(#arr-pipe)"/>
+          <rect x="420" y="232" width="270" height="40" rx="8" class="d-box-soft"/>
+          <text x="555" y="250" text-anchor="middle" class="d-text-b">1b · pipeline-fix (≤ 2 attempts)</text>
+          <text x="555" y="264" text-anchor="middle" class="d-text-sm">reads pipeline logs, must produce BUILD_OK again</text>
+          <path d="M420,262 C330,262 300,225 232,225" class="d-line d-dash"/>
+
+          <!-- base guard + PR -->
+          <line x1="130" y1="234" x2="130" y2="284" class="d-line" marker-end="url(#arr-pipe)"/>
+          <rect x="30" y="286" width="200" height="52" rx="8" class="d-box"/>
+          <text x="130" y="304" text-anchor="middle" class="d-text-b">base guard, open PR</text>
+          <text x="130" y="318" text-anchor="middle" class="d-text-sm">foreign commits = 0 or park</text>
+          <text x="130" y="331" text-anchor="middle" class="d-text-sm">→ Waiting, PR URL on ticket</text>
+
+          <!-- review -->
+          <line x1="230" y1="312" x2="420" y2="336" class="d-line-accent" marker-end="url(#arr-pipe-a)"/>
+          <rect x="420" y="318" width="270" height="40" rx="8" class="d-box-accent"/>
+          <text x="555" y="336" text-anchor="middle" class="d-text-inv">2 · review — /code-review</text>
+          <text x="555" y="350" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">one PR comment per finding, or "LGTM"</text>
+
+          <!-- collaudo -->
+          <line x1="555" y1="358" x2="555" y2="380" class="d-line-accent" marker-end="url(#arr-pipe-a)"/>
+          <rect x="420" y="382" width="270" height="52" rx="8" class="d-box-accent"/>
+          <text x="555" y="400" text-anchor="middle" class="d-text-inv">2b · collaudo — collaudo-locale</text>
+          <text x="555" y="414" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">API-level acceptance run on local minikube, own slot</text>
+          <text x="555" y="427" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">findings become "collaudo:" PR comments</text>
+
+          <!-- address -->
+          <line x1="555" y1="434" x2="555" y2="456" class="d-line-accent" marker-end="url(#arr-pipe-a)"/>
+          <rect x="420" y="458" width="270" height="40" rx="8" class="d-box-accent"/>
+          <text x="555" y="476" text-anchor="middle" class="d-text-inv">3 · address — one round</text>
+          <text x="555" y="490" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">fix + pin with a test, or reply why not</text>
+
+          <!-- done -->
+          <line x1="420" y1="478" x2="230" y2="512" class="d-line" marker-end="url(#arr-pipe)"/>
+          <rect x="30" y="494" width="200" height="40" rx="8" class="d-box-soft"/>
+          <text x="130" y="512" text-anchor="middle" class="d-text-b">PR open for a human merge</text>
+          <text x="130" y="526" text-anchor="middle" class="d-text-sm">merge → ticket Done → siblings rebased</text>
+
+          <!-- side labels -->
+          <text x="130" y="360" text-anchor="middle" class="d-text-sm">proof of work: a review that posted</text>
+          <text x="130" y="373" text-anchor="middle" class="d-text-sm">zero comments never happened</text>
+          <text x="130" y="410" text-anchor="middle" class="d-text-sm">cluster down or no slot → PR still</text>
+          <text x="130" y="423" text-anchor="middle" class="d-text-sm">exists, ticket says "not collaudato"</text>
+          <text x="130" y="460" text-anchor="middle" class="d-text-sm">no BUILD_OK after address ≠ "nothing</text>
+          <text x="130" y="473" text-anchor="middle" class="d-text-sm">to change": reported as unaddressed</text>
+        </svg>
+        <figcaption>One ticket, four agent sessions. Orange boxes are agents; white boxes are deterministic Python. Every hand-off between the two is a file the worker must write.</figcaption>
+      </figure>
+
+      <h3>The marker protocol</h3>
+
+      <p>The implement prompt ends with the sentence that holds the whole thing together:</p>
+
+      <blockquote>You are NOT finished until one of these two files exists on disk: the orchestrator reads ONLY them &mdash; a session that ends without BUILD_OK or BUILD_FAIL is treated as dead, and your work is retried or parked no matter what your final message says.</blockquote>
+
+      <p>Three outcomes. <code>BUILD_OK</code> means push. <code>BUILD_FAIL</code> is never retried: the worker's own explanation, in plain English, is quoted onto the ticket with a <code>needs-human</code> label. <em>Neither</em> means the session died mid-stream, and the orchestrator reads the last six lines of the log to decide whether that death was transient or terminal.</p>
+
+      <p>The marker files, the ticket dump, the siblings file and the PR body draft are all written to <code>.git/info/exclude</code> so that no worker can commit them. That rule exists because one PR shipped a <code>BUILD_OK</code> file to the migrations repo.</p>
+
+      <h3>What the implement session sees</h3>
+
+      <p>The implement prompt is eight numbered steps. The ones that changed the quality of the output:</p>
+
+      <ul>
+        <li><strong>The ticket, on disk.</strong> The full Jira ticket, with its acceptance criteria, is dumped to <code>.ralph-ticket.md</code> in the repo root. No MCP round-trip, no summarisation.</li>
+        <li><strong>The specs, before design.</strong> The functional-specs checkout is mounted with <code>--add-dir</code>. "If an ADR contradicts the ticket, follow the ADR and say so in your commit message."</li>
+        <li><strong>The siblings.</strong> A file with one line per other ticket in the epic. The instruction: before you add a loop, a scheduled rewrite or an event emission, work out its volume at the fleet ceiling the infra spec states &mdash; not at the size of your test fixture &mdash; and check whether a sibling ticket is the consumer that would eat it. A worker that only ever saw its own ticket optimised for that ticket's acceptance criteria and could not know which sibling consumes what it writes.</li>
+        <li><strong>The concurrency test nobody asked for.</strong> "The acceptance criteria describe one actor doing one thing, so they will not ask you for a concurrency test; when the code you are writing has a second writer in production, write that red test and make the write conditional yourself."</li>
+        <li><strong>The same commands the pipeline runs.</strong> Inspect <code>bitbucket-pipelines.yml</code> and run what it runs, locally, before claiming green.</li>
+        <li><strong>Do not push. Do not open a PR. Do not merge or rebase from any other branch.</strong> The orchestrator owns the git surface between phases.</li>
+      </ul>
+
+      <h3>The base == target invariant</h3>
+
+      <p>A ticket names its repository and its trunk in a heading section of its description (<code>my-app &mdash; trunk development</code>). That single value is both the branch the work is cut from and the destination of its pull request. They can never diverge, because a PR pointing at a branch the work was not based on shows every commit between the two.</p>
+
+      <div class="callout">
+        <div class="callout-label">Scar</div>
+        <p>This is what put 62 unrelated commits into one migrations-repo PR. The repo's trunk is <code>development</code>; Bitbucket's default branch and its branching model both say <code>main</code>; the loop cut from one and targeted the other. Ancestry checks cannot catch this &mdash; <code>main</code> is an ancestor of <code>development</code>, so every <code>--is-ancestor</code> test passes. What distinguishes foreign work is that it is <em>already published somewhere else</em>. So before opening a PR the loop counts commits in the PR range that already sit on another remote branch. Zero is the only healthy answer; an uncountable range reports −1 and the ticket is parked rather than opened on a guess.</p>
+      </div>
+
+      <h3>Honesty gates</h3>
+
+      <p>The pipeline has several places where "done" would be a lie, and each one has a check:</p>
+
+      <ul>
+        <li><strong>Proof of work on review.</strong> A completed review always posts at least one comment (a clean one posts "LGTM"). Zero comments means the review never happened, and the ticket says "UNREVIEWED" instead of "review done". A count of −1 (cannot tell) is not evidence either way.</li>
+        <li><strong>A dead address pass is not "no changes needed".</strong> No <code>BUILD_OK</code> after the address phase looks exactly like "the review needed no code change". Saying "review + fixes done" there was the lie that let unaddressed comments reach a human as ready-to-merge.</li>
+        <li><strong>A worker that committed but forgot the marker</strong> looks identical to a dead one. If commits exist, the ticket says the work is there instead of implying nothing happened.</li>
+        <li><strong>Collaudo can never block a PR.</strong> The cluster being down, no free slot, a dead session: the PR still exists, and the ticket gets a note that it was <em>not</em> acceptance-tested and a human should do it. The gate is cheap and orchestrator-side &mdash; one <code>kubectl</code> call &mdash; because probing the cluster inside a worker costs a whole agent session that ends in failure.</li>
+      </ul>
+
+      <h3>Failures are typed, not boolean</h3>
+
+      <p>When a session dies without a marker, the orchestrator classifies the last lines of the log as <code>TRANSIENT</code> or <code>TERMINAL</code> and carries the decisive line with the verdict. Terminal failures (authentication, permission, billing, most 4xx) cannot succeed on any attempt, so retrying them only spends budget. Transient ones (DNS blips, 429, 5xx, "prompt is too long") requeue the ticket for a later poll with no human action &mdash; parking a human on an API wobble is wrong. After three transient deaths the ticket is parked anyway, and the comment names the machine-level cause.</p>
+
+      <p>The failed log of each attempt is kept under its own name. Diagnosing one ticket needed the <em>first</em> attempt's error line, and every retry had erased it.</p>
+
+      <h3>Merges, siblings and the spec that moved</h3>
+
+      <p>The loop never merges. When a human does, three things happen on the next poll. The ticket transitions to Done, which unblocks its dependents. Every other open PR the loop owns <em>on the same repo</em> is rebased onto its own trunk and force-pushed with lease; on conflict, a dedicated session runs the conflict-resolution skill (it is told never to abort), and if the rebase does not finish clean the loop aborts it and asks a human. And the frontier fetch picks up the newly unblocked tickets.</p>
+
+      <p>There is one more pass I did not expect to need. A PR is a snapshot of what the ticket and the specs said on the day it was implemented, and both keep moving. So every poll compares the ticket's <code>updated</code> field and the specs checkout's last commit against the last commit on the branch. When either is newer, one <strong>resync</strong> session re-reads today's acceptance criteria, points at the code that satisfies each one, and closes only the gap &mdash; or comments on the PR that there is none. Two subtleties: the comparison uses the <em>author</em> date, because sibling rebases rewrite the committer date and would hide exactly the edits the check exists to catch; and the loop advances its own watermark past every comment and transition it posts itself, because in the tracker those look identical to a human edit and would burn the resync cap.</p>
+
+      <h3>No credentials in workers</h3>
+
+      <p>Workers reach Jira and Bitbucket only through two central MCP endpoints behind a gateway, passed per session with <code>--mcp-config --strict-mcp-config</code>, and every Atlassian credential is stripped from their environment. A worker cannot fall back to a raw API call because it has nothing to authenticate with. Git, on the other hand, stays personal: the loop clones and pushes with the developer's own SSH key, so commits are attributed to a person, and no token ever appears in a remote URL.</p>
+
+      <p>Because the MCP writes are made by a shared service account, the human who triggered the run has to appear in the text. A <code>prepare-commit-msg</code> hook, installed in each workspace's <code>.git</code> and never committed, stamps <code>Triggered-by:</code> and <code>Agent:</code> trailers on every commit whether or not the agent remembered to write them. A hook rather than a prompt instruction, because agents forget and hooks do not.</p>
+
+      <h3>The knobs</h3>
+
+      <table>
+        <thead>
+          <tr><th>Knob</th><th>Default</th><th>What it bounds</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>MAX_RUNTIME</code></td><td>18000 s</td><td>Total loop wall clock (~5 h)</td></tr>
+          <tr><td><code>POLL_SECONDS</code></td><td>300 s</td><td>Frontier poll interval</td></tr>
+          <tr><td><code>MAX_CONCURRENT</code></td><td>2</td><td>Tickets in flight</td></tr>
+          <tr><td><code>SESSION_TIMEOUT</code></td><td>5400 s</td><td>One agent session; the watchdog kills a pipeline at 3×</td></tr>
+          <tr><td><code>FIX_CAP</code></td><td>2</td><td>Remote-pipeline auto-fix attempts</td></tr>
+          <tr><td><code>RALPH_TRANSIENT_RETRIES</code></td><td>1</td><td>Extra attempt per phase on a transient death</td></tr>
+          <tr><td><code>RALPH_TRANSIENT_PARK_CAP</code></td><td>3</td><td>Transient deaths before parking anyway</td></tr>
+          <tr><td><code>RALPH_RESYNC_CAP</code></td><td>2</td><td>Catch-up passes per ticket before asking a human</td></tr>
+          <tr><td><code>RALPH_COLLAUDO_REPOS</code></td><td>2 repos</td><td>Which repos the local cluster can acceptance-test</td></tr>
+        </tbody>
+      </table>
+
+      <p>There is no token budget. The budget is time and attempts. Everything is environment variables read once into a frozen dataclass; the only file the loop writes as configuration is the per-run MCP config for workers, mode 0600 because it carries the gateway key.</p>
+
+      <h3>Testing an orchestrator of agents</h3>
+
+      <p>The agent sessions are the one thing you cannot unit-test, so the seam is the runner: tests script a fake runner per phase ("the review session dies transiently, the retry succeeds") and assert on Jira transitions, comments, labels, pushes and state files. The git layer is tested against <em>real</em> temporary repositories &mdash; trunk inference, foreign-commit counting, the attribution hook &mdash; because those bugs were all in the interaction with git itself.</p>
+
+      <p>My favourite test file exists because the fakes drifted. A fake grew a method the real class never got; every test passed while the real class raised <code>AttributeError</code> on the first launched pipeline. Now one test asserts the fakes' public methods are a subset of the real classes', and another scans the orchestrator's source for every <code>self.ops.X(</code>, <code>self.jira.X(</code>, <code>self.bb.X(</code> and resolves it against the real class. Drift is a test failure instead of a production crash.</p>
+
+      <p>And the prompts are tested too. Not their output &mdash; their <em>contracts</em>: the implement prompt demands a PR description; the review prompt uses MCP only; the resync prompt closes only the gap; the rebase prompt forbids abort. If someone edits a prompt and drops the sentence that holds the protocol together, CI says so.</p>
+
+      <h3>A small joy</h3>
+
+      <p>Every worker session gets an appended system prompt that compresses its narration into classical Chinese &mdash; a real log ends with <code>畢。TICKET-144 成，建綠</code> ("done; built green") &mdash; with one exception written in capitals: failure reports are for a human, so anything in a <code>BUILD_FAIL</code> file, any statement of being blocked, and the last message of a session that did not reach green are in plain English. The 5% of output a human reads is exactly the failures. Nobody reads the other 95%, so it might as well be cheap.</p>
+
+      <hr>
+
+      <h2>How the Three Fit</h2>
+
+      <figure>
+        <svg class="diagram" viewBox="0 0 720 230" role="img" aria-label="Skills, sync and the loop reinforcing each other">
+          <defs>
+            <marker id="arr-fit" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+          <rect x="20" y="70" width="190" height="80" rx="10" class="d-box"/>
+          <text x="115" y="98" text-anchor="middle" class="d-text-b">Skills</text>
+          <text x="115" y="116" text-anchor="middle" class="d-text-sm">the standard, as instructions</text>
+          <text x="115" y="132" text-anchor="middle" class="d-text-sm">51 SKILL.md + specs checkout</text>
+
+          <rect x="265" y="70" width="190" height="80" rx="10" class="d-box"/>
+          <text x="360" y="98" text-anchor="middle" class="d-text-b">Sync</text>
+          <text x="360" y="116" text-anchor="middle" class="d-text-sm">same standard on every machine</text>
+          <text x="360" y="132" text-anchor="middle" class="d-text-sm">hourly, from origin/main only</text>
+
+          <rect x="510" y="70" width="190" height="80" rx="10" class="d-box-accent"/>
+          <text x="605" y="98" text-anchor="middle" class="d-text-inv">Ralph Loop</text>
+          <text x="605" y="116" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">applies the standard unattended</text>
+          <text x="605" y="132" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">/tdd, /code-review, collaudo, specs</text>
+
+          <line x1="210" y1="110" x2="265" y2="110" class="d-line-accent" marker-end="url(#arr-fit)"/>
+          <line x1="455" y1="110" x2="510" y2="110" class="d-line-accent" marker-end="url(#arr-fit)"/>
+
+          <path d="M605,150 C605,200 115,200 115,150" class="d-line-accent d-dash" marker-end="url(#arr-fit)"/>
+          <text x="360" y="206" text-anchor="middle" class="d-text-sm">every scar in the loop becomes a rule in a skill, and the skill reaches everyone within the hour</text>
+
+          <text x="360" y="40" text-anchor="middle" class="d-text-sm">A merged change to the skills repo alters every agent session company-wide. That is the point, and the blast radius.</text>
+        </svg>
+        <figcaption>The feedback loop. The Ralph Loop is the harshest consumer of the skills, because nobody is watching it work.</figcaption>
+      </figure>
+
+      <p>The skills are the standard. The sync makes the standard the default on every machine without anyone doing anything. The loop is what forced the standard to be precise: an interactive session forgives a vague skill because a human is there to nudge; a headless one does exactly what the skill says, and if the skill says nothing about which branch to cut from, you get 62 foreign commits in a PR. Every scar in Part 3 became a sentence in a skill in Part 1, and Part 2 delivered that sentence to every developer within the hour.</p>
+
+      <hr>
+
+      <h2>Key Takeaways</h2>
+
+      <ol>
+        <li><strong>Write the standard for the agent, not the wiki.</strong> A skill fires at the moment the agent is about to do the thing. Its description is a list of triggers; its steps end on checkable criteria.</li>
+        <li><strong>Install from <code>origin/main</code>, never from a working tree.</strong> Your feature branch is not the team's standard, and a deleted remote branch should not stop updates for hours.</li>
+        <li><strong>The only channel from an agent to an orchestrator is a file it must write.</strong> Never trust the final message. No marker means dead, not done.</li>
+        <li><strong>Fresh session per phase.</strong> Implement, review, acceptance-test and address are different jobs with different prompts. Sharing context between them shares mistakes.</li>
+        <li><strong>Type your failures.</strong> Transient requeues; terminal parks; the decisive line travels with the verdict; every attempt's log is kept.</li>
+        <li><strong>Base and target are one value.</strong> Cut from the branch you will merge into, and count foreign commits before opening a PR. Ancestry checks are not enough.</li>
+        <li><strong>Build honesty gates where "done" would be a lie.</strong> Zero review comments is not a review. A dead address pass is not "nothing to change".</li>
+        <li><strong>Hooks over instructions for anything that must always happen.</strong> Attribution trailers land because a git hook writes them, not because the agent remembered.</li>
+        <li><strong>Test the fakes against the real classes, and test the prompts' contracts.</strong> Drift in either is a production crash you can turn into a CI failure.</li>
+        <li><strong>Do not put the loop on a cron.</strong> The thing that claims tickets and opens PRs under your name deserves a human pressing enter.</li>
+      </ol>
+    </article>
+  </main>
+
+  <footer id="footer-slot"></footer>
+
+  <script src="../js/site.js"></script>
+</body>
+</html>
