@@ -166,17 +166,37 @@ main {
 
 .hero h1 {
   font-family: 'EB Garamond', Georgia, serif;
-  font-size: 2.6rem;
-  font-weight: 500;
-  line-height: 1.15;
-  letter-spacing: -0.02em;
-  margin-bottom: 0.6rem;
+  font-size: 2.9rem;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  margin-bottom: 0.75rem;
 }
 
 .hero p {
   color: var(--text-muted);
   font-size: 1.05rem;
   max-width: 540px;
+}
+
+.hero-home {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2rem;
+}
+
+.hero-home .hero-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.hero-art {
+  flex: 0 0 auto;
+  width: clamp(200px, 40%, 300px);
+  height: auto;
+  object-fit: contain;
+  display: block;
 }
 
 .section-label {
@@ -265,7 +285,7 @@ article .post-header {
 article .post-header h1 {
   font-family: 'EB Garamond', Georgia, serif;
   font-size: 2.5rem;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1.15;
   letter-spacing: -0.02em;
   margin-bottom: 0.75rem;
@@ -287,7 +307,7 @@ article .post-meta .dot {
 article h2 {
   font-family: 'EB Garamond', Georgia, serif;
   font-size: 1.85rem;
-  font-weight: 500;
+  font-weight: 600;
   margin-top: 3rem;
   margin-bottom: 0.9rem;
   line-height: 1.2;
@@ -533,8 +553,10 @@ footer .footer-links {
   nav .logo-text { font-size: 1.3rem; }
   nav .nav-right { gap: 0.75rem; }
   nav .nav-link { font-size: 0.85rem; }
-  .hero h1 { font-size: 2rem; }
+  .hero h1 { font-size: 2.1rem; }
   .hero { margin-bottom: 2rem; padding-bottom: 1.5rem; }
+  .hero-home { flex-direction: column-reverse; align-items: flex-start; gap: 1rem; }
+  .hero-art { width: min(70%, 240px); align-self: center; }
   .post-card { padding: 1.2rem 1.25rem; border-radius: 12px; }
   .post-card .post-title { font-size: 1.25rem; }
   article .post-header h1 { font-size: 1.85rem; }
