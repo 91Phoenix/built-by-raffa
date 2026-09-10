@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Watching the Time In Between: Designing an IoT Cold-Chain Compliance Engine &mdash; Bradicode</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <nav id="nav-slot"></nav>
+
+  <main>
+    <a href="index.html" class="back-link">&larr; All posts</a>
+
+    <article>
+      <div class="post-header">
+        <h1>Watching the Time In Between: Designing an IoT Cold-Chain Compliance Engine</h1>
+        <div class="post-meta">
+          <span>September 2026</span>
+          <span class="dot">&middot;</span>
+          <span>20 min read</span>
+        </div>
+      </div>
+
+      <p>Food businesses have to prove they keep their fridges cold. Under HACCP the proof is a scheduled check &mdash; typically twice a day &mdash; where someone reads a thermometer and writes the value down. The first thing we automated was that step: a Bluetooth temperature probe in the fridge fills in the scheduled check so nobody has to walk over with a clipboard.</p>
+
+      <p>That turned out to be the least valuable thing a probe can do. A probe reports every minute. Using it to fill in two boxes a day throws away almost all of its readings, and it means that when a fridge dies at 23:50 the store manager finds out at the morning check, hours and one spoiled inventory later. The value of the probe is not filling in the checks. It is <strong>watching the time in between</strong>.</p>
+
+      <p>This post is about how we redesigned the system to do that: a compliance engine that evaluates every probe continuously, opens a managed deviation only when something is actually wrong, escalates when nobody looks, and leaves a history an inspector can read &mdash; while staying flat in cost as the fleet grows by orders of magnitude. The design was written as a series of Architecture Decision Records, and I will name the alternatives we rejected, because that is where the design actually lives.</p>
+
+      <hr>
+
+      <h2>What Was There Before</h2>
+
+      <p>Before touching anything we wrote down what production actually did, because a plan that starts from an imagined baseline is a plan for a different system. What ran was this:</p>
+
+      <ul>
+        <li>A chain of <strong>one-shot schedules</strong>, each armed for the time of the next scheduled check, re-arming itself after firing.</li>
+        <li>On each trigger, <strong>one read</strong>: the latest reading for the probe, with no condition on how old it was. That value was written into the scheduled check.</li>
+        <li>The comparison with the limits happened <strong>on that single point</strong>. Any out-of-range reading opened the "under monitoring" stage &mdash; and, thanks to a bug, so did readings <em>in</em> range. Compliant fridges were polluting the very history an inspector would read.</li>
+        <li>No freshness check. A probe switched off a week ago still returned its last reading, recorded as a compliant check. Wrong, but at least visible.</li>
+        <li>No polling, no window, no moving average anywhere in the code. The continuous evaluation some documents described did not exist.</li>
+      </ul>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 236" role="img" aria-label="Before: one-shot schedules reading a single value. After: continuous evaluation on a moving average.">
+          <defs>
+            <marker id="arr-ba" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+            <marker id="arr-ba-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+          <text x="170" y="20" text-anchor="middle" class="d-text-b">Before</text>
+          <rect x="20" y="36" width="300" height="118" rx="10" class="d-box"/>
+          <line x1="40" y1="90" x2="300" y2="90" class="d-line"/>
+          <text x="40" y="76" class="d-text-sm">morning</text>
+          <text x="268" y="76" class="d-text-sm">evening</text>
+          <circle cx="60" cy="90" r="5" class="d-good"/>
+          <circle cx="290" cy="90" r="5" class="d-good"/>
+          <path d="M120,90 L140,60 L160,60 L180,58 L200,56 L220,55 L280,55" class="d-line-accent d-dash"/>
+          <text x="200" y="48" text-anchor="middle" class="d-text-accent">fridge fails at night → found at next check</text>
+          <text x="170" y="118" text-anchor="middle" class="d-text-sm">one value read per scheduled check</text>
+          <text x="170" y="132" text-anchor="middle" class="d-text-sm">single sample vs limits · no freshness · no average</text>
+          <text x="170" y="146" text-anchor="middle" class="d-text-sm">a reading a minute, ignored</text>
+
+          <text x="550" y="20" text-anchor="middle" class="d-text-b">After</text>
+          <rect x="400" y="36" width="300" height="118" rx="10" class="d-box-outline"/>
+          <line x1="420" y1="90" x2="680" y2="90" class="d-line"/>
+          <g>
+            <circle cx="430" cy="90" r="3" class="d-good"/><circle cx="446" cy="90" r="3" class="d-good"/><circle cx="462" cy="90" r="3" class="d-good"/>
+            <circle cx="478" cy="90" r="3" class="d-good"/><circle cx="494" cy="90" r="3" class="d-good"/><circle cx="510" cy="90" r="3" class="d-good"/>
+            <circle cx="526" cy="90" r="3" class="d-warn"/><circle cx="542" cy="90" r="3" class="d-bad"/><circle cx="558" cy="90" r="3" class="d-bad"/>
+            <circle cx="574" cy="90" r="3" class="d-bad"/><circle cx="590" cy="90" r="3" class="d-bad"/><circle cx="606" cy="90" r="3" class="d-bad"/>
+            <circle cx="622" cy="90" r="3" class="d-bad"/><circle cx="638" cy="90" r="3" class="d-bad"/><circle cx="654" cy="90" r="3" class="d-bad"/><circle cx="670" cy="90" r="3" class="d-bad"/>
+          </g>
+          <line x1="542" y1="66" x2="542" y2="84" class="d-line-accent" marker-end="url(#arr-ba-a)"/>
+          <text x="542" y="60" text-anchor="middle" class="d-text-accent">deviation opened, notified</text>
+          <text x="550" y="118" text-anchor="middle" class="d-text-sm">evaluated every few minutes on the hourly average</text>
+          <text x="550" y="132" text-anchor="middle" class="d-text-sm">notified once per change · escalated if unhandled</text>
+          <text x="550" y="146" text-anchor="middle" class="d-text-sm">silent probe detected in minutes</text>
+
+          <line x1="320" y1="95" x2="400" y2="95" class="d-line" marker-end="url(#arr-ba)"/>
+
+          <text x="360" y="200" text-anchor="middle" class="d-text">The scheduled checks stay. They become the <tspan class="d-text-b">record</tspan>; the engine adds the surveillance between them.</text>
+          <text x="360" y="222" text-anchor="middle" class="d-text-sm">Three levels: raw telemetry · scheduled recordings · event-based deviation management. The old system fused all three.</text>
+        </svg>
+        </div>
+        <figcaption>Before, the probe auto-filled two boxes a day. After, it feeds a gate that runs continuously &mdash; and the two boxes still get filled, with the hourly average rather than a point.</figcaption>
+      </figure>
+
+      <p>The first decision was about <em>separating levels</em>. The old design fused three things with different natures: raw telemetry (a reading a minute), the scheduled recordings that are the backbone of HACCP self-control, and the management of deviations. The new one keeps them apart, each with its own retention and its own store: telemetry lives for days, recordings and deviation events for years.</p>
+
+      <hr>
+
+      <h2>The Shape of the System on AWS</h2>
+
+      <p>Before the individual decisions, the map. The pipeline has six layers, and most of the left half already existed: probes, gateways, IoT Core, the Lambda that splits gateway batches into single readings. What is new is one DynamoDB table with two sparse indexes, a handful of Lambdas, a change stream wired through an EventBridge Pipe into SQS, and the event tables on the relational side.</p>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 760 500" role="img" aria-label="AWS architecture: IoT Core, Lambda, Kinesis, DynamoDB state table with two GSIs, Streams, EventBridge Pipe, SQS, worker, Postgres, notifications">
+          <defs>
+            <marker id="arr-aws" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+            <marker id="arr-aws-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+
+          <!-- lanes -->
+          <rect x="10" y="10" width="740" height="92" rx="8" class="d-lane"/>
+          <text x="20" y="26" class="d-text-sm">EDGE + INGEST</text>
+          <rect x="10" y="112" width="740" height="150" rx="8" class="d-lane"/>
+          <text x="20" y="128" class="d-text-sm">STATE + EVALUATION</text>
+          <rect x="10" y="272" width="740" height="110" rx="8" class="d-lane"/>
+          <text x="20" y="288" class="d-text-sm">ALERTING</text>
+          <rect x="10" y="392" width="740" height="98" rx="8" class="d-lane"/>
+          <text x="20" y="408" class="d-text-sm">RECORD + CONSUMERS</text>
+
+          <!-- edge -->
+          <rect x="20" y="40" width="90" height="46" rx="8" class="d-box"/>
+          <text x="65" y="59" text-anchor="middle" class="d-text-b">probes</text>
+          <text x="65" y="74" text-anchor="middle" class="d-text-sm">1 reading / min</text>
+          <line x1="110" y1="63" x2="130" y2="63" class="d-line" marker-end="url(#arr-aws)"/>
+          <rect x="130" y="40" width="90" height="46" rx="8" class="d-box"/>
+          <text x="175" y="59" text-anchor="middle" class="d-text-b">gateway</text>
+          <text x="175" y="74" text-anchor="middle" class="d-text-sm">MQTT, batched</text>
+          <line x1="220" y1="63" x2="240" y2="63" class="d-line" marker-end="url(#arr-aws)"/>
+          <rect x="240" y="40" width="100" height="46" rx="8" class="d-aws"/>
+          <text x="290" y="59" text-anchor="middle" class="d-text-b">IoT Core</text>
+          <text x="290" y="74" text-anchor="middle" class="d-text-sm">topic rules</text>
+          <line x1="340" y1="63" x2="360" y2="63" class="d-line" marker-end="url(#arr-aws)"/>
+          <rect x="360" y="40" width="120" height="46" rx="8" class="d-aws"/>
+          <text x="420" y="59" text-anchor="middle" class="d-text-b">Lambda: splitter</text>
+          <text x="420" y="74" text-anchor="middle" class="d-text-sm">batch → single readings</text>
+
+          <!-- two paths from splitter -->
+          <line x1="480" y1="52" x2="530" y2="52" class="d-line d-dash" marker-end="url(#arr-aws)"/>
+          <rect x="530" y="34" width="105" height="36" rx="8" class="d-aws"/>
+          <text x="582" y="49" text-anchor="middle" class="d-text-b">DynamoDB: raw</text>
+          <text x="582" y="63" text-anchor="middle" class="d-text-sm">Phase 1 · TTL days</text>
+
+          <line x1="480" y1="76" x2="530" y2="76" class="d-line-accent" marker-end="url(#arr-aws-a)"/>
+          <rect x="530" y="74" width="105" height="24" rx="8" class="d-aws"/>
+          <text x="582" y="90" text-anchor="middle" class="d-text-b">Kinesis · Phase 2</text>
+
+          <line x1="635" y1="86" x2="665" y2="86" class="d-line-accent" marker-end="url(#arr-aws-a)"/>
+          <rect x="665" y="72" width="80" height="28" rx="8" class="d-aws"/>
+          <text x="705" y="86" text-anchor="middle" class="d-text-b" style="font-size:11px">Lambda: slot</text>
+          <text x="705" y="96" text-anchor="middle" class="d-text-sm" style="font-size:9px">write + evaluate</text>
+
+          <!-- state table -->
+          <rect x="250" y="140" width="260" height="110" rx="10" class="d-box-outline"/>
+          <text x="380" y="160" text-anchor="middle" class="d-text-b">DynamoDB: state table — one row per probe</text>
+          <text x="380" y="176" text-anchor="middle" class="d-mono">PK probe_serial · no TTL</text>
+          <rect x="262" y="188" width="110" height="50" rx="6" class="d-box-soft"/>
+          <text x="317" y="205" text-anchor="middle" class="d-text-sm">GSI stale-sweep</text>
+          <text x="317" y="218" text-anchor="middle" class="d-mono" style="font-size:9px">shard / last_seen</text>
+          <text x="317" y="230" text-anchor="middle" class="d-text-sm" style="font-size:9px">sparse · KEYS_ONLY</text>
+          <rect x="388" y="188" width="110" height="50" rx="6" class="d-box-soft"/>
+          <text x="443" y="205" text-anchor="middle" class="d-text-sm">GSI escalation</text>
+          <text x="443" y="218" text-anchor="middle" class="d-mono" style="font-size:9px">shard / escalation_due</text>
+          <text x="443" y="230" text-anchor="middle" class="d-text-sm" style="font-size:9px">sparse · KEYS_ONLY</text>
+
+          <!-- slot lambda writes state -->
+          <path d="M705,100 C705,130 560,120 510,160" class="d-line-accent" marker-end="url(#arr-aws-a)"/>
+          <!-- raw read by poller -->
+          <rect x="30" y="150" width="130" height="46" rx="8" class="d-aws"/>
+          <text x="95" y="169" text-anchor="middle" class="d-text-b">Lambda: poller</text>
+          <text x="95" y="184" text-anchor="middle" class="d-text-sm">Phase 1 · every 5 min</text>
+          <path d="M95,150 C95,108 470,108 535,70" class="d-line d-dash"/>
+          <text x="300" y="104" text-anchor="middle" class="d-text-sm" style="font-size:9px">reads last hour of raw</text>
+          <line x1="160" y1="180" x2="250" y2="180" class="d-line" marker-end="url(#arr-aws)"/>
+          <text x="205" y="175" text-anchor="middle" class="d-text-sm">gate write</text>
+
+          <!-- sweeper -->
+          <rect x="30" y="206" width="130" height="46" rx="8" class="d-aws"/>
+          <text x="95" y="225" text-anchor="middle" class="d-text-b">Lambda: sweeper</text>
+          <text x="95" y="240" text-anchor="middle" class="d-text-sm">every minute, both GSIs</text>
+          <line x1="160" y1="222" x2="262" y2="222" class="d-line d-dash" marker-end="url(#arr-aws)"/>
+
+          <!-- reconciler -->
+          <rect x="560" y="150" width="170" height="46" rx="8" class="d-aws"/>
+          <text x="645" y="169" text-anchor="middle" class="d-text-b">reconciler (service pod)</text>
+          <text x="645" y="184" text-anchor="middle" class="d-text-sm">assignments + limits, every 15 min</text>
+          <line x1="560" y1="173" x2="510" y2="173" class="d-line" marker-end="url(#arr-aws)"/>
+          <text x="535" y="167" text-anchor="middle" class="d-text-sm" style="font-size:9px">upsert</text>
+          <line x1="645" y1="196" x2="645" y2="392" class="d-line d-dash"/>
+          <text x="660" y="300" class="d-text-sm" style="font-size:9px">keyset walk</text>
+          <text x="660" y="311" class="d-text-sm" style="font-size:9px">over the API</text>
+
+          <!-- alerting chain -->
+          <line x1="380" y1="250" x2="380" y2="300" class="d-line-accent" marker-end="url(#arr-aws-a)"/>
+          <text x="392" y="278" class="d-text-accent" style="font-size:10px">committed change</text>
+          <rect x="320" y="302" width="120" height="34" rx="8" class="d-aws"/>
+          <text x="380" y="316" text-anchor="middle" class="d-text-b">DynamoDB Streams</text>
+          <text x="380" y="329" text-anchor="middle" class="d-text-sm">the outbox</text>
+          <line x1="320" y1="319" x2="270" y2="319" class="d-line-accent" marker-end="url(#arr-aws-a)"/>
+          <rect x="150" y="302" width="120" height="34" rx="8" class="d-aws"/>
+          <text x="210" y="316" text-anchor="middle" class="d-text-b">EventBridge Pipe</text>
+          <text x="210" y="329" text-anchor="middle" class="d-text-sm">filter: gate changed</text>
+          <line x1="150" y1="319" x2="120" y2="319" class="d-line-accent" marker-end="url(#arr-aws-a)"/>
+          <rect x="30" y="302" width="90" height="34" rx="8" class="d-aws"/>
+          <text x="75" y="316" text-anchor="middle" class="d-text-b">SQS</text>
+          <text x="75" y="329" text-anchor="middle" class="d-text-sm">+ dead-letter</text>
+          <line x1="75" y1="336" x2="75" y2="352" class="d-line-accent" marker-end="url(#arr-aws-a)"/>
+          <rect x="30" y="352" width="140" height="26" rx="8" class="d-box"/>
+          <text x="100" y="369" text-anchor="middle" class="d-text-b">event worker (service pod)</text>
+          <line x1="170" y1="365" x2="250" y2="365" class="d-line" marker-end="url(#arr-aws)"/>
+          <text x="210" y="360" text-anchor="middle" class="d-text-sm" style="font-size:9px">open stage</text>
+          <rect x="250" y="352" width="110" height="26" rx="8" class="d-box-accent"/>
+          <text x="305" y="369" text-anchor="middle" class="d-text-inv" style="font-size:11px">push + email</text>
+
+          <!-- record layer -->
+          <rect x="450" y="420" width="290" height="52" rx="8" class="d-box"/>
+          <text x="595" y="440" text-anchor="middle" class="d-text-b">management system · Postgres</text>
+          <text x="595" y="456" text-anchor="middle" class="d-text-sm">assignments, limits, recordings, deviation events</text>
+          <path d="M100,378 C100,440 300,446 450,446" class="d-line" marker-end="url(#arr-aws)"/>
+          <text x="340" y="438" text-anchor="middle" class="d-text-sm" style="font-size:9px">deviation event, via the API</text>
+
+          <rect x="30" y="420" width="200" height="52" rx="8" class="d-box"/>
+          <text x="130" y="440" text-anchor="middle" class="d-text-b">operator app · back office</text>
+          <text x="130" y="456" text-anchor="middle" class="d-text-sm">read colours by probe id, never raw data</text>
+          <line x1="230" y1="446" x2="450" y2="446" class="d-line d-dash"/>
+        </svg>
+        </div>
+        <figcaption>Solid lines are data flowing; dashed lines are reads and queries. Orange is the hot path: a reading becomes a state write, a committed state change becomes a stream record, and only then a notification. Yellow-bordered boxes are AWS managed services; the two "service pod" boxes are the only long-running application processes.</figcaption>
+      </figure>
+
+      <p>Three things to notice on the map, each of which becomes a decision below. The <strong>state table is the contract</strong>: the poller, the slot Lambda and the reconciler all write it; consumers only ever read it by probe id; so the producer can change from Phase 1 to Phase 2 without the readers noticing. <strong>Nothing downstream of the table is triggered by a Lambda</strong>: alerting starts from the committed write, through the table's own change stream. And <strong>the two sparse indexes are what keep the sweeper flat</strong>: they contain only silent probes and only unacknowledged deviations, so a minute-by-minute scan reads almost nothing regardless of fleet size.</p>
+
+      <hr>
+
+      <h2>Decision 1 &mdash; The Gate Is a Moving Average, and Nothing Else</h2>
+
+      <p>Compliance is evaluated on the <strong>moving average of the last hour</strong> of readings, compared with the control's limits, every few minutes. Average inside the limits: green. Average outside: red. That is the whole gate.</p>
+
+      <p>The alternative was the intuitive one: compare the <em>raw</em> value and require it to stay out of range for a persistence window before going red. It gives earlier warning and cleaner recovery. It also needs a fourth traffic-light state ("under verification"), a persistence counter, and hysteresis to stop the light from flapping &mdash; three mechanisms doing what the average does alone. A defrost cycle spikes for a few minutes; an average over an hour barely moves. <strong>The average is the anti-transient mechanism.</strong></p>
+
+      <p>We accepted the trade-offs out loud. No early warning: the transition is green-to-red with no orange. And slow recovery: after a repair the light stays red until the average comes back, up to most of an hour after the operator has fixed the problem. The second one needed a line of UI copy ("the value returns gradually"), not a state.</p>
+
+      <p>A later infrastructure draft tried to sneak two rejected mechanisms back in: a pending state requiring two consecutive bad evaluations, and a minimum number of samples before evaluating at all. Both were removed. A consecutive-breach counter redoes the average's job and delays detection; a minimum sample count reintroduces a blind hour at start-up that the next rule already covers.</p>
+
+      <h3>Evaluation is decoupled from recording</h3>
+
+      <p>Evaluating every few minutes is cheap only if it does not call the management system every few minutes. So <strong>evaluation</strong> (inside the IoT service, against a working copy of the limits) is a different act from <strong>recording</strong> (a write to the management system, only on state changes and at the scheduled check). Evaluating every minute was considered &mdash; it is the granularity the data has &mdash; but it multiplies round-trips for a few minutes' gain on a slow thermal signal.</p>
+
+      <h3>Start "at regime"</h3>
+
+      <p>After a probe is associated or re-activated, monitoring starts neither immediately nor after a fixed timer, but at the <em>first reading inside the limits</em>. The same gesture covers two opposite situations the system cannot tell apart: an empty fridge cooling down (readings high but harmless) and a technical re-association of a full fridge already cold. A fixed grace period protects the first and opens a blind hour on the second. "First reading inside limits" handles both: on the empty fridge it waits; on the full one it finishes instantly. From then on the average runs on whatever partial window exists, rather than waiting for a full hour.</p>
+
+      <hr>
+
+      <h2>Decision 2 &mdash; Three Levels of State: Phase, Gate, Stage</h2>
+
+      <p>The confusion in the old system came from one status field answering three different questions. The new model keeps three:</p>
+
+      <table>
+        <thead>
+          <tr><th>Level</th><th>Question it answers</th><th>Nature</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Phase</strong></td><td>Is this control being watched at all?</td><td>Changes on association / suspension</td></tr>
+          <tr><td><strong>Gate</strong></td><td>Is the food OK <em>right now</em>?</td><td>Sampled, re-evaluated every poll</td></tr>
+          <tr><td><strong>Stage</strong></td><td>Is the deviation being <em>handled</em>?</td><td>One event with a life cycle</td></tr>
+        </tbody>
+      </table>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 330" role="img" aria-label="State machines for Phase, Gate and Stage">
+          <defs>
+            <marker id="arr-sm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+            <marker id="arr-sm-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+          <text x="20" y="24" class="d-text-b">Phase</text>
+          <rect x="20" y="36" width="130" height="34" rx="17" class="d-box"/>
+          <text x="85" y="58" text-anchor="middle" class="d-mono">WAITING_REGIME</text>
+          <line x1="150" y1="53" x2="200" y2="53" class="d-line" marker-end="url(#arr-sm)"/>
+          <text x="175" y="46" text-anchor="middle" class="d-text-sm">1st in-range</text>
+          <rect x="200" y="36" width="110" height="34" rx="17" class="d-box-outline"/>
+          <text x="255" y="58" text-anchor="middle" class="d-mono">AT_REGIME</text>
+          <line x1="310" y1="48" x2="360" y2="48" class="d-line" marker-end="url(#arr-sm)"/>
+          <line x1="360" y1="58" x2="310" y2="58" class="d-line" marker-end="url(#arr-sm)"/>
+          <rect x="360" y="36" width="100" height="34" rx="17" class="d-box"/>
+          <text x="410" y="58" text-anchor="middle" class="d-mono">SUSPENDED</text>
+          <text x="480" y="52" class="d-text-sm">suspend the association, not the fridge</text>
+          <text x="480" y="66" class="d-text-sm">re-activation returns to WAITING_REGIME</text>
+
+          <text x="20" y="110" class="d-text-b">Gate</text>
+          <text x="70" y="110" class="d-text-sm">(meaningful only AT_REGIME, re-evaluated every poll)</text>
+          <rect x="20" y="122" width="110" height="34" rx="17" class="d-box"/>
+          <text x="75" y="144" text-anchor="middle" class="d-mono">COMPLIANT</text>
+          <line x1="130" y1="134" x2="200" y2="134" class="d-line-accent" marker-end="url(#arr-sm-a)"/>
+          <text x="165" y="127" text-anchor="middle" class="d-text-accent">avg out</text>
+          <line x1="200" y1="146" x2="130" y2="146" class="d-line" marker-end="url(#arr-sm)"/>
+          <text x="165" y="162" text-anchor="middle" class="d-text-sm">avg back in</text>
+          <rect x="200" y="122" width="130" height="34" rx="17" class="d-box"/>
+          <text x="265" y="144" text-anchor="middle" class="d-mono">NON_COMPLIANT</text>
+          <text x="265" y="176" text-anchor="middle" class="d-text-sm">red B · out of limits</text>
+          <line x1="75" y1="156" x2="75" y2="184" class="d-line-accent" marker-end="url(#arr-sm-a)"/>
+          <rect x="20" y="186" width="130" height="34" rx="17" class="d-box"/>
+          <text x="85" y="208" text-anchor="middle" class="d-mono">DATA_ABSENT</text>
+          <text x="85" y="234" text-anchor="middle" class="d-text-sm">red A · probe silent</text>
+          <text x="360" y="140" class="d-text-sm">Two reds, different owners and remedies:</text>
+          <text x="360" y="156" class="d-text-sm">B → operator: fix / suspend monitoring / declare NC</text>
+          <text x="360" y="172" class="d-text-sm">A → technician: remove the association, control goes manual</text>
+          <text x="360" y="188" class="d-text-sm">A self-heals if the probe starts transmitting again</text>
+
+          <text x="20" y="272" class="d-text-b">Stage</text>
+          <text x="70" y="272" class="d-text-sm">(one event per deviation)</text>
+          <rect x="20" y="284" width="140" height="34" rx="17" class="d-box"/>
+          <text x="90" y="306" text-anchor="middle" class="d-mono">UNDER_MONITORING</text>
+          <line x1="160" y1="301" x2="235" y2="301" class="d-line" marker-end="url(#arr-sm)"/>
+          <text x="197" y="294" text-anchor="middle" class="d-text-sm">avg back in</text>
+          <rect x="235" y="284" width="150" height="34" rx="17" class="d-box"/>
+          <text x="310" y="306" text-anchor="middle" class="d-mono">AWAITING_CONFIRM</text>
+          <line x1="385" y1="301" x2="445" y2="301" class="d-line" marker-end="url(#arr-sm)"/>
+          <text x="415" y="294" text-anchor="middle" class="d-text-sm">signed</text>
+          <rect x="445" y="284" width="80" height="34" rx="17" class="d-box-soft"/>
+          <text x="485" y="306" text-anchor="middle" class="d-mono">CLOSED</text>
+          <rect x="560" y="284" width="60" height="34" rx="17" class="d-box"/>
+          <text x="590" y="306" text-anchor="middle" class="d-mono">NC</text>
+          <text x="630" y="306" class="d-text-sm">manual, always</text>
+        </svg>
+        </div>
+        <figcaption>The gate is sampled; the stage is an event with a life cycle. The stage opens only on a red gate, never on a green one &mdash; that asymmetry is the fix for the old bug.</figcaption>
+      </figure>
+
+      <p>Three rules follow from the split, and each was argued over:</p>
+
+      <ul>
+        <li><strong>Green permits closing; it does not cause it.</strong> A deviation closes only when the average is back <em>and</em> the operator has confirmed a corrective action. Temperature OK plus documentary proof of the intervention is the most defensible criterion in an inspection.</li>
+        <li><strong>Closing and escalating have different conditions.</strong> Closing requires <em>both</em>; escalation stops as soon as <em>either</em> holds. Average back but nobody signed: stays open, does not escalate (the physical problem is gone). Signed but average still red: stays open, does not escalate (someone has it &mdash; escalation is about coverage, not authority). We wrote the second case wrong at first, and the ADR won. The accepted risk is on record: an operator who stamps "fixed" without fixing stops the escalation.</li>
+        <li><strong>A non-conformity is never automatic.</strong> Detection is automatic and immutable ("red from 23:50, escalated at 01:00, not handled" stays in history). The <em>conclusion</em> &mdash; declaring an NC &mdash; is a human act, attributed by the operator code typed at that moment. Not clicking cannot erase a deviation; only a person can call it a non-conformity.</li>
+      </ul>
+
+      <hr>
+
+      <h2>Decision 3 &mdash; One State Row per Probe, Keyed by the Hardware Serial</h2>
+
+      <p>Evaluation state has to live somewhere between polls. The decision was <strong>one row per probe</strong> in DynamoDB, partitioned by the probe's hardware serial. Not per control, not in worker memory, not in a cache. Here is the row, with field names paraphrased:</p>
+
+      <pre><code>{
+  "probe_serial": "ac233fabcd12",       // partition key — hardware id, canonical form
+
+  // what this probe is watching (copied from the management system, remapped on publication)
+  "control_ref":    "…",                // the control definition that carries the limits
+  "equipment_ref":  "…",                // the fridge
+  "quantity":       "TEMPERATURE",      // which channel of the payload to read
+  "limit_min": 2.0, "limit_max": 8.0, "unit": "C",
+  "config_version": 4,                  // working copy of the limits; bumped by the reconciler
+
+  // the window — Phase 2 only. Phase 1 recomputes it from raw readings instead.
+  "slots": {                            // absolute 5-minute buckets, ~12 kept
+    "1770000000": { "v": 4.1, "ts": 1770000287 },
+    "1770000300": { "v": 4.3, "ts": 1770000581 }
+  },
+
+  // the three levels of state
+  "phase":     "AT_REGIME",             // WAITING_REGIME | AT_REGIME | SUSPENDED
+  "gate":      "COMPLIANT",             // COMPLIANT | NON_COMPLIANT | DATA_ABSENT
+  "red_cause": null,                    // OUT_OF_LIMITS | PROBE_SILENT
+  "event_ref": null,                    // the open deviation event on the relational side
+
+  // keys of the two sparse indexes
+  "shard":     37,                      // hash(probe_serial) % N, stable for life
+  "last_seen": 1770000300               // sort key of the stale-sweep index; REMOVED when suspended
+  // "escalation_due": 1770003900       // sort key of the escalation index; present ONLY while a
+                                        // deviation is open and unacknowledged, REMOVED on ack
+  // no TTL attribute: the row dies by reconciliation, never by time
+}</code></pre>
+
+      <p>Why this shape, group by group:</p>
+
+      <table>
+        <thead>
+          <tr><th>Group</th><th>Why it lives here</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Copied config</strong> (control, equipment, limits, version)</td><td>Evaluation runs every few minutes for every probe and must not call the management system each time. The copy is refreshed by the reconciler; a version number makes a stale copy detectable. Only the <em>alert</em> depends on it; the HACCP record is always computed on live limits (Decision 7).</td></tr>
+          <tr><td><strong>Slots</strong> (a map keyed by absolute bucket start)</td><td>One read returns the whole window, so the average is computed by whoever reads and never stored. Absolute keys make late readings land in their own bucket instead of corrupting the current one. A map, not a list, so a single conditional <code>SET slots.#k</code> is idempotent per bucket.</td></tr>
+          <tr><td><strong>Phase, gate, cause, event</strong></td><td>These are the fields a conditional write can lock on. The gate transition is <code>SET gate = RED IF gate == GREEN</code>: DynamoDB serialises writes on the row, so exactly one evaluator opens the event. The event ref is the only pointer into the relational side.</td></tr>
+          <tr><td><strong>Sparse-index keys</strong> (shard, last_seen, escalation_due)</td><td>A GSI only contains items that have its sort key. Removing <code>last_seen</code> on suspension and <code>escalation_due</code> on acknowledgement makes rows <em>leave</em> the indexes, so the sweeper reads only what is actually pending. The shard spreads the index across partitions so a minute-by-minute query never hammers one.</td></tr>
+          <tr><td><strong>What is absent</strong> (the average, a TTL, the raw readings)</td><td>The average is a derived value and storing it would mean a second write per update and a fixed window. A TTL would expire rows exactly when the probe goes quiet (Decision 4). Raw readings stay in their own table with a short TTL; this row holds only what the engine needs to decide.</td></tr>
+        </tbody>
+      </table>
+
+      <p>The row is small on purpose. With one measurement per slot it stays under a single write unit, and DynamoDB bills an update on the whole row size, not on the delta. The two indexes are keys-only projections, so every state write costs one base write plus two index writes and nothing more.</p>
+
+      <h3>Why the serial and not the control</h3>
+
+      <p>The control is the subject of compliance: it carries the limits, it is what goes green or red. Keying by it looks natural. It is wrong here, for a reason buried in the management system: <strong>publishing a new version of the HACCP manual recreates the touched entities with new ids.</strong> Rename a room and its equipment gets new ids; touch a control and its whole procedure is recreated. Keying the state row by the control would orphan every row on every publication &mdash; window lost, every control back to waiting-for-regime, an hour of blindness across the fleet.</p>
+
+      <p>The hardware serial is the only identity a publication does not touch. So the control and equipment ids are <em>attributes</em> on the row, remapped by the publication flow, and the state &mdash; phase, gate, open event &mdash; survives a re-publication untouched.</p>
+
+      <div class="callout">
+        <div class="callout-label">Found in the code</div>
+        <p>An earlier decision assumed the association survived publication by itself because it was "modelled on the equipment". Reading the code showed the opposite: the publication step deleted the probe's association and re-attached it by matching <em>equipment name plus room name</em> &mdash; exactly the fields whose change causes the id reset. Renaming a room was enough to silently stop monitoring a fridge. That ADR was superseded by one that passes the old-to-new id map through the publication instead, and emits an immutable trace for every remap.</p>
+      </div>
+
+      <h3>Why not memory, why not a cache</h3>
+
+      <p>State in worker memory needs consistent hashing from probe to pod, sticky routing, rebalancing on every scale event, and a rebuild of every window on restart &mdash; a simultaneous read burst across the whole fleet. With durable state the workers hold nothing: any pod serves any probe, scaling is adding pods, restart has no repopulation procedure. A cache as the source of truth was excluded because it loses data on failover, which brings the repopulation procedure straight back.</p>
+
+      <h3>Why the average is never stored</h3>
+
+      <p>Whoever reads computes the average from the window of samples. The window length stays a <em>read parameter</em>: the same row serves an hour today and another duration tomorrow with no migration. The cost is that every reader must compute it the same way, so the computation lives behind <strong>one interface with two source implementations</strong> &mdash; raw readings in the first phase, pre-bucketed slots in the second. The gate, the stage and the escalation do not know where the average came from, which is what lets the transport change underneath them later.</p>
+
+      <h3>Two details that would have silently falsified compliance data</h3>
+
+      <p><strong>Absolute slot timestamps, not a circular index.</strong> With a fixed one-hour window of five-minute slots, an array of twelve positions indexed by <code>(minute / 5) % 12</code> is the obvious optimisation. It is a bug. The gateway ships in batches, so a 09:00 reading can arrive at 10:05. With a circular index it lands in the 10:00 slot and falsifies the average &mdash; no exception, no metric, just a wrong compliance value. With an absolute key it lands in its historical slot, outside the window, and is correctly ignored.</p>
+
+      <p><strong>Last value wins, not sum and count.</strong> Delivery is at-least-once twice over: the MQTT layer retransmits until acknowledged, and the stream consumer replays a batch on error. A <code>sum/count</code> accumulator counts the duplicate and moves the average that decides an alert. A conditional write &mdash; "set this slot only if absent or older than my timestamp" &mdash; is idempotent, tolerates out-of-order delivery, and needs no lock.</p>
+
+      <hr>
+
+      <h2>Decision 4 &mdash; The Absence of Data Has to Be Hunted</h2>
+
+      <p>An evaluator cannot, by construction, detect a silent probe. A probe that sends nothing produces no writes and is never evaluated; and a poller running every few minutes is too slow for an "offline" alarm that must be immediate. Absence has to be sought actively, at a finer cadence than evaluation.</p>
+
+      <p>Three ways were considered. A per-item expiry with a delete event is elegant and needs no sweeper, but the store guarantees expiry only "typically within 48 hours" &mdash; unacceptable for an alarm. One schedule per control is a pattern we already used, but at fleet scale it is millions of schedules against a quota of about that size, plus a create and a delete per control per cycle. The third is what we built:</p>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 250" role="img" aria-label="Sparse sharded index swept every minute for silent probes">
+          <defs>
+            <marker id="arr-gsi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+          </defs>
+          <rect x="20" y="30" width="150" height="48" rx="8" class="d-box-soft"/>
+          <text x="95" y="50" text-anchor="middle" class="d-text-b">sweeper, every minute</text>
+          <text x="95" y="66" text-anchor="middle" class="d-text-sm">one query per shard</text>
+          <line x1="170" y1="54" x2="220" y2="54" class="d-line" marker-end="url(#arr-gsi)"/>
+
+          <rect x="220" y="20" width="480" height="150" rx="10" class="d-box"/>
+          <text x="235" y="40" class="d-text-b">sparse secondary index</text>
+          <text x="235" y="56" class="d-mono">partition: hash(serial) % N · sort: last_seen</text>
+
+          <g>
+            <rect x="235" y="72" width="50" height="60" rx="4" class="d-box-soft"/><text x="260" y="88" text-anchor="middle" class="d-text-sm">shard 0</text>
+            <rect x="291" y="72" width="50" height="60" rx="4" class="d-box-soft"/><text x="316" y="88" text-anchor="middle" class="d-text-sm">shard 1</text>
+            <rect x="347" y="72" width="50" height="60" rx="4" class="d-box-soft"/><text x="372" y="88" text-anchor="middle" class="d-text-sm">shard 2</text>
+            <text x="425" y="106" text-anchor="middle" class="d-text-sm">…</text>
+            <rect x="450" y="72" width="50" height="60" rx="4" class="d-box-soft"/><text x="475" y="88" text-anchor="middle" class="d-text-sm">shard N-1</text>
+            <rect x="240" y="96" width="40" height="10" rx="2" class="d-bad"/>
+            <rect x="352" y="96" width="40" height="10" rx="2" class="d-bad"/>
+            <rect x="352" y="110" width="40" height="10" rx="2" class="d-bad"/>
+          </g>
+          <text x="520" y="90" class="d-mono">WHERE shard = :s</text>
+          <text x="520" y="104" class="d-mono">  AND last_seen &lt; :cutoff</text>
+          <text x="520" y="126" class="d-text-sm">N queries per cycle, at any fleet size</text>
+          <text x="520" y="140" class="d-text-sm">healthy fleet → ~0 results → ~nothing</text>
+          <text x="235" y="156" class="d-text-sm">Only rows that HAVE last_seen are in the index. A suspended row has it removed, so it vanishes instead of matching forever.</text>
+
+          <text x="360" y="200" text-anchor="middle" class="d-text">Threshold: three missing readings (two are normal jitter for a batching gateway). Worst-case detection in a few minutes.</text>
+          <text x="360" y="222" text-anchor="middle" class="d-text-sm">A second sparse index on the same shard attribute, sorted by escalation deadline, serves the escalation in the same sweep.</text>
+          <text x="360" y="242" text-anchor="middle" class="d-text-sm">A full scan would grow linearly with the fleet; the sharded query is flat.</text>
+        </svg>
+        </div>
+        <figcaption>Silent-probe detection that costs the same at ten thousand probes and ten million. The shard is stable for the life of the probe; the sort key changes at most once per slot, so there is no index write amplification.</figcaption>
+      </figure>
+
+      <p>The sparse index has a consequence that became its own decision. The original design put a sliding expiry on the state row, renewed by every write. That expiry moves forward while the probe transmits and <em>stops when the probe goes quiet</em>. A probe silent long enough expired its own row &mdash; and the sweeper can only find silent probes among rows that exist. The alarm ceased exactly in the case it existed to catch: surveillance ending by statute of limitations, with no error and no metric. <strong>The state row has no expiry.</strong> A row dies because the assignment is gone (see reconciliation, below), an explicit decision with a trace &mdash; not because time passed.</p>
+
+      <p>Same principle for suspension. A suspended row receives no readings by definition, so whoever suspends must <em>remove</em> the last-seen attribute, and whoever re-activates restores it. Otherwise the row keeps an old value, matches the cutoff on every sweep forever, and the sweeper's cost scales with the number of suspended fridges instead of open incidents.</p>
+
+      <hr>
+
+      <h2>Decision 5 &mdash; Edge-Triggered Notification Without Loss or Duplication</h2>
+
+      <p>Notify on the change of state, never "still red" every poll. That needs a mechanism that fires exactly once per transition and survives a crash halfway through. The naive order &mdash; read state, notify, write state &mdash; breaks: a crash between notify and write leaves the old state, and the next evaluation notifies again.</p>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 290" role="img" aria-label="Conditional write as lock, change stream as outbox">
+          <defs>
+            <marker id="arr-ev" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+            <marker id="arr-ev-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+          <rect x="20" y="20" width="110" height="40" rx="8" class="d-box"/>
+          <text x="75" y="44" text-anchor="middle" class="d-text-b">evaluator A</text>
+          <rect x="20" y="80" width="110" height="40" rx="8" class="d-box"/>
+          <text x="75" y="104" text-anchor="middle" class="d-text-b">evaluator B</text>
+          <text x="75" y="140" text-anchor="middle" class="d-text-sm">both see the average red</text>
+
+          <line x1="130" y1="40" x2="200" y2="62" class="d-line-accent" marker-end="url(#arr-ev-a)"/>
+          <line x1="130" y1="100" x2="200" y2="78" class="d-line" marker-end="url(#arr-ev)"/>
+
+          <rect x="200" y="30" width="200" height="82" rx="8" class="d-box-outline"/>
+          <text x="300" y="50" text-anchor="middle" class="d-text-b">state row</text>
+          <text x="300" y="68" text-anchor="middle" class="d-mono">SET gate = RED</text>
+          <text x="300" y="82" text-anchor="middle" class="d-mono">IF gate == GREEN</text>
+          <text x="300" y="102" text-anchor="middle" class="d-text-accent">exactly one writer wins</text>
+
+          <line x1="400" y1="70" x2="450" y2="70" class="d-line-accent" marker-end="url(#arr-ev-a)"/>
+          <rect x="450" y="50" width="110" height="40" rx="8" class="d-box-soft"/>
+          <text x="505" y="70" text-anchor="middle" class="d-text-b">change stream</text>
+          <text x="505" y="84" text-anchor="middle" class="d-text-sm">the outbox, retried</text>
+
+          <line x1="560" y1="70" x2="600" y2="70" class="d-line-accent" marker-end="url(#arr-ev-a)"/>
+          <rect x="600" y="50" width="100" height="40" rx="8" class="d-box-soft"/>
+          <text x="650" y="70" text-anchor="middle" class="d-text-b">filter</text>
+          <text x="650" y="84" text-anchor="middle" class="d-text-sm">gate changed?</text>
+
+          <line x1="650" y1="90" x2="650" y2="130" class="d-line-accent" marker-end="url(#arr-ev-a)"/>
+          <rect x="600" y="132" width="100" height="40" rx="8" class="d-box-soft"/>
+          <text x="650" y="152" text-anchor="middle" class="d-text-b">queue + DLQ</text>
+
+          <line x1="600" y1="152" x2="540" y2="152" class="d-line-accent" marker-end="url(#arr-ev-a)"/>
+          <rect x="400" y="132" width="140" height="40" rx="8" class="d-box"/>
+          <text x="470" y="152" text-anchor="middle" class="d-text-b">event worker</text>
+
+          <line x1="400" y1="152" x2="330" y2="152" class="d-line" marker-end="url(#arr-ev)"/>
+          <rect x="200" y="132" width="130" height="40" rx="8" class="d-box"/>
+          <text x="265" y="152" text-anchor="middle" class="d-text-b">deviation event</text>
+          <text x="265" y="166" text-anchor="middle" class="d-text-sm">relational store</text>
+          <text x="265" y="190" text-anchor="middle" class="d-text-sm">unique "open event per control" index</text>
+          <text x="265" y="203" text-anchor="middle" class="d-text-sm">→ idempotent under at-least-once</text>
+
+          <line x1="265" y1="172" x2="265" y2="218" class="d-line" marker-end="url(#arr-ev)"/>
+          <rect x="185" y="220" width="160" height="40" rx="8" class="d-box-accent"/>
+          <text x="265" y="240" text-anchor="middle" class="d-text-inv">push + email</text>
+          <text x="265" y="254" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">contact lists per scope, not roles</text>
+
+          <text x="520" y="232" class="d-text-sm">Crash after the write: committed and on the stream</text>
+          <text x="520" y="246" class="d-text-sm">→ no notification lost.</text>
+          <text x="520" y="266" class="d-text-sm">Crash before the write: nothing committed → no ghost alert.</text>
+        </svg>
+        </div>
+        <figcaption>The state change is itself the lock, and the change stream is the outbox. No lock table, no lease, no poller, no cleanup job.</figcaption>
+      </figure>
+
+      <p>Two properties fall out. First, <strong>the transition is a conditional write that names the expected prior state</strong>. Two evaluators that both see red both attempt it; the store serialises writes on the row; the first passes and the second's condition is false. Exactly one winner, with no coordination. Second, <strong>the notification does not start from the evaluator</strong>. The committed change appears on the table's change stream, a filter keeps only records where the gate changed, and a worker turns them into push and email. It is a transactional outbox where the stream <em>is</em> the outbox.</p>
+
+      <p>One more subtlety, which was the actual defect in an earlier draft: <strong>the notification is attached to the opening of the stage, not the transition of the gate</strong>. If the light flaps &mdash; red, green, red &mdash; the stage stays open and absorbs it. Hysteresis was rejected for the gate precisely because the stage already does this job, provided the notification hangs off the right event.</p>
+
+      <hr>
+
+      <h2>Decision 6 &mdash; Escalation Is a Sweep, Acknowledgement Is a Push</h2>
+
+      <p>If nobody handles a deviation within the policy window, the next level of contacts is notified. The first draft scheduled a one-shot timer per event, justified by "exact timing instead of sweep granularity". That argument lost: on a one-hour policy threshold, a one-minute sweep is off by under 2%, and the threshold is a policy number, not a physical deadline. Meanwhile the one-shot cost three real things: schedule churn per event, an extra failure surface, and above all a <em>distributed cancellation problem</em> &mdash; acknowledgement happens in the management system, which would then have to call the IoT service to cancel a timer.</p>
+
+      <p>Instead, a deadline attribute is written when the gate opens a deviation and <em>removed</em> when acknowledgement arrives. A second sparse index on the same shard attribute therefore contains, by construction, only open and unacknowledged deviations &mdash; a handful of rows across the fleet, zero in a healthy one &mdash; and the sweep already running for silent probes reads it too.</p>
+
+      <p>Acknowledgement is a push, not a poll, and arithmetic decides it. Polling &mdash; the IoT service asking "is this handled yet?" on every sweep &mdash; is tens of thousands of calls a day for a few dozen open deviations, nearly all answering "no change". A push is one call per acknowledgement and one per escalation that actually fires. Three properties follow. Cancellation stops being distributed: it is an idempotent attribute removal. The error direction is safe: a lost acknowledgement leaves the deadline in place and fires an escalation on a handled event &mdash; a visible, harmless false positive, never a missed one. And it scales flat.</p>
+
+      <hr>
+
+      <h2>Decision 7 &mdash; Two Comparisons, Two Roles</h2>
+
+      <p>The limits are compared in two places, and the difference is declared rather than suffered:</p>
+
+      <ul>
+        <li>The <strong>alerting gate</strong>, in the IoT service, against a <em>working copy</em> of the limits refreshed periodically from the management system. It decides only when to wake someone up.</li>
+        <li>The <strong>record outcome</strong>, in the management system, against the <em>live</em> limits, at the moment the scheduled recording is written. It is the only outcome that lands in the HACCP history an inspector reads.</li>
+      </ul>
+
+      <p>This makes the staleness of the copy <em>harmless by construction</em>: a copy a few minutes old can produce one alert too many or too late, never a wrong record. Alerts are recoverable; records are not. A single decider in the IoT service would move authority over the limits out of the system that owns them and make the HACCP record depend on a possibly stale copy &mdash; the risk exactly where it cannot be recovered. A single decider in the management system, queried on every evaluation, brings back the round-trip that the polling cadence exists to avoid. A push on limit changes is acknowledged as the better long-term answer and deferred; the two-role split is what makes deferring it safe.</p>
+
+      <p>The price is that the two rules must match to the letter: inclusive thresholds, and the same rounding applied to the average before comparing. And the IoT service now hands the management system <em>the average of the window</em>, not the point reading &mdash; which is also what removes the branch that opened "under monitoring" on a single sample.</p>
+
+      <hr>
+
+      <h2>Decision 8 &mdash; State Rows Are Reconciled, Not Commanded</h2>
+
+      <p>The assignment &mdash; probe, equipment, control, suspension &mdash; lives in the management system, because it owns the manual and the manual is what you are inspected against. The IoT service <strong>does not receive commands to create state rows. It reconciles.</strong> Periodically it walks the set of active assignments with their limits, creates missing rows in waiting-for-regime, updates the copied fields in place, and removes rows no longer in the set. Assignment events also trigger an immediate pass for latency, but the periodic walk is the self-healing floor, not the primary channel.</p>
+
+      <p>The alternative &mdash; create on event only &mdash; is less code and lower latency. But a lost event (a deploy, a failed request, a queue in error) leaves a probe unmonitored <em>forever</em>, and nobody finds out, because there is no row from which to notice. That is the worst failure mode in the domain. Reconciliation gives three things for free that a command path would build one by one: bootstrap of a new environment, recovery after a lost event, and propagation of the id remap on publication.</p>
+
+      <p>Reconciling a fleet-sized set needs care in the walk itself. It is <strong>keyset pagination, not offset</strong>: with offsets, a row removed between two pages shifts everything after it, and the walk skips a probe that is still active &mdash; the reconciler would then delete a live row. The response carries a <strong>completeness marker</strong> compared against the rows collected over the <em>whole</em> walk; a count that changes mid-walk invalidates the walk; and a contraction of the set beyond a threshold is treated as an alarm, not a truth to apply. Deleting on the basis of an incomplete answer is the one thing the reconciler must never do.</p>
+
+      <hr>
+
+      <h2>Decision 9 &mdash; Cutover in Shadow, Then One Switch per Site</h2>
+
+      <p>The new path went to production first in <strong>shadow</strong>: running completely and writing its own state, but neither writing recordings nor notifying. A single flag governs both effects, because a shadow that notifies sends alarms from a non-authoritative system, which is the fastest way to lose trust in a product.</p>
+
+      <p>Cutover then happens <strong>per site</strong> with one boolean. Off, the scheduled recording carries the point value and the old chain notifies; on, the same recording carries the hourly average and the new path notifies. Per site and not per fridge on purpose: with the finer switch, two adjacent fridges in the same kitchen would behave differently and neither the user nor support could explain why. Direct cutover without shadow was rejected because the first divergence between the two models would be discovered on a customer's HACCP record, and a rollback does not unwrite a recording. Double-writing was rejected because it dirties the history with records from a system under test.</p>
+
+      <p>The exit criterion from shadow is explicitly <em>not</em> "zero differences": the two models disagree by design. The criterion is that every difference is explained by the model change and none by a bug.</p>
+
+      <hr>
+
+      <h2>The Cost Shape That Decided the Design</h2>
+
+      <p>The fleet is small today and the declared target is orders of magnitude larger. No functional decision took a position on that, yet it changes which design is correct. When we priced the pipeline at target scale, the dominant line was not the window, the evaluation, or the sweeps. It was the ingestion rule that writes <em>every raw reading</em> straight into the key-value store &mdash; tens of times the cost of carrying the same events through a stream. Retiring that write is the goal of the second phase.</p>
+
+      <p>Two other readings of that exercise shaped the plan. <strong>Compute is not the lever</strong>: all the functions together were a rounding error next to the store's write costs, so moving them onto a cluster would trade a small saving for lease tables and shard rebalancing. And the state row fits in a single write unit only because it carries one measurement; adding a second one would cross the unit boundary and double the write line, because the store bills on total row size, not on the delta. That is the only cost effect of keeping humidity out of scope: the model already carries it end to end and discards it at the last step.</p>
+
+      <hr>
+
+      <h2>The Adoption Path</h2>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 240" role="img" aria-label="Phases 0 to 3 of the adoption path">
+          <defs>
+            <marker id="arr-ph" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+          <line x1="30" y1="60" x2="700" y2="60" class="d-line-accent" marker-end="url(#arr-ph)"/>
+          <g>
+            <circle cx="70" cy="60" r="7" class="d-box"/>
+            <rect x="15" y="80" width="130" height="130" rx="8" class="d-box"/>
+            <text x="80" y="100" text-anchor="middle" class="d-text-b">Phase 0 · before</text>
+            <text x="80" y="120" text-anchor="middle" class="d-text-sm">one-shot schedules</text>
+            <text x="80" y="134" text-anchor="middle" class="d-text-sm">single value read</text>
+            <text x="80" y="148" text-anchor="middle" class="d-text-sm">point vs limits</text>
+            <text x="80" y="162" text-anchor="middle" class="d-text-sm">no average anywhere</text>
+            <text x="80" y="190" text-anchor="middle" class="d-text-accent">retired with a date</text>
+          </g>
+          <g>
+            <circle cx="245" cy="60" r="7" class="d-box-accent"/>
+            <rect x="175" y="80" width="150" height="130" rx="8" class="d-box-outline"/>
+            <text x="250" y="100" text-anchor="middle" class="d-text-b">Phase 1 · transition</text>
+            <text x="250" y="120" text-anchor="middle" class="d-text-sm">poller on existing transport</text>
+            <text x="250" y="134" text-anchor="middle" class="d-text-sm">recomputes window from raw</text>
+            <text x="250" y="148" text-anchor="middle" class="d-text-sm">state row, no slots yet</text>
+            <text x="250" y="162" text-anchor="middle" class="d-text-sm">sweeper, stream, escalation: live</text>
+            <text x="250" y="176" text-anchor="middle" class="d-text-sm">cost scales with the fleet</text>
+            <text x="250" y="196" text-anchor="middle" class="d-text-accent">the engine goes to production</text>
+          </g>
+          <g>
+            <circle cx="430" cy="60" r="7" class="d-box-accent"/>
+            <rect x="355" y="80" width="150" height="130" rx="8" class="d-box-outline"/>
+            <text x="430" y="100" text-anchor="middle" class="d-text-b">Phase 2 · the goal</text>
+            <text x="430" y="120" text-anchor="middle" class="d-text-sm">ingest through a stream</text>
+            <text x="430" y="134" text-anchor="middle" class="d-text-sm">slots written on arrival</text>
+            <text x="430" y="148" text-anchor="middle" class="d-text-sm">evaluate on write</text>
+            <text x="430" y="162" text-anchor="middle" class="d-text-sm">retire the raw write</text>
+            <text x="430" y="176" text-anchor="middle" class="d-text-sm">cost scales with traffic</text>
+            <text x="430" y="196" text-anchor="middle" class="d-text-accent">then shorten raw retention</text>
+          </g>
+          <g>
+            <circle cx="610" cy="60" r="7" class="d-box"/>
+            <rect x="535" y="80" width="170" height="130" rx="8" class="d-box"/>
+            <text x="620" y="100" text-anchor="middle" class="d-text-b">Phase 3 · far scale</text>
+            <text x="620" y="120" text-anchor="middle" class="d-text-sm">more stream shards</text>
+            <text x="620" y="134" text-anchor="middle" class="d-text-sm">stateless filter or stateful engine</text>
+            <text x="620" y="148" text-anchor="middle" class="d-text-sm">dead-banding</text>
+            <text x="620" y="162" text-anchor="middle" class="d-text-sm">lake for history and reporting</text>
+            <text x="620" y="190" text-anchor="middle" class="d-text-accent">out of this activity</text>
+          </g>
+          <text x="360" y="232" text-anchor="middle" class="d-text-sm">Invariant across phases: consumers only read the state row by serial. The producer changes underneath them.</text>
+        </svg>
+        </div>
+        <figcaption>Phase 1 puts the compliance engine &mdash; the part with all the domain rules &mdash; into production on a transport that already works. Phase 2 changes the transport under an engine we already trust.</figcaption>
+      </figure>
+
+      <p>Why not go straight to Phase 2? Because the first release would then depend on new transport before the compliance engine &mdash; the user-visible value and the part with the most domain rules &mdash; is in production and verified. The thing that makes this a phase plan and not a rewrite is the storage contract: consumers only ever read the state row by serial, and the average sits behind one interface with two source implementations.</p>
+
+      <p>Phase 2 has an ordering constraint that is easy to get backwards. The sweeper must exist <em>before</em> raw-telemetry retention is shortened. Today a probe that has been switched off returns a stale reading that gets recorded as compliant &mdash; wrong, but visible. Shorten retention first and that reading no longer exists; the value arrives empty; the management system skips the write without saying anything. Inverting the order turns a wrong value into a fridge with no surveillance and no alarm.</p>
+
+      <hr>
+
+      <h2>What Changed, Side by Side</h2>
+
+      <table>
+        <thead>
+          <tr><th></th><th>Before</th><th>After</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Detection of a failure</td><td>At the next scheduled check, hours later</td><td>When the hourly average crosses the limit; silent probe within minutes</td></tr>
+          <tr><td>What is compared</td><td>One point reading</td><td>Moving average over the last hour</td></tr>
+          <tr><td>Defrost cycles</td><td>Any spike went "under monitoring"</td><td>Averaged out; no intermediate states needed</td></tr>
+          <tr><td>Compliant readings</td><td>Also opened "under monitoring"</td><td>The stage opens only on a red gate</td></tr>
+          <tr><td>Notifications</td><td>Per reading</td><td>Once per transition, durable through the change stream</td></tr>
+          <tr><td>Escalation</td><td>None</td><td>After the policy window if unacknowledged, by coverage not authority</td></tr>
+          <tr><td>Silent probe</td><td>Stale value recorded as compliant</td><td>Distinct red, immediate, technical remedy, self-heals if the probe returns</td></tr>
+          <tr><td>History</td><td>Polluted by non-events</td><td>Immutable detection trace; NC only by a human with an operator code</td></tr>
+          <tr><td>Publishing a new manual</td><td>Silently detached probes on rename</td><td>Ids remapped through the publication; state survives</td></tr>
+          <tr><td>Cost at scale</td><td>Dominated by writing every raw reading</td><td>Flat sweeps and escalation; writes scale with traffic, not fleet</td></tr>
+          <tr><td>Scaling the workers</td><td>&mdash;</td><td>Stateless: any pod, any probe; restart has no repopulation</td></tr>
+        </tbody>
+      </table>
+
+      <hr>
+
+      <h2>Key Takeaways</h2>
+
+      <ol>
+        <li><strong>Write down what production actually does before planning phases.</strong> The continuous evaluation existed in documents and nowhere in code.</li>
+        <li><strong>One anti-transient mechanism, not three.</strong> The moving average made the intermediate state, the persistence counter and the hysteresis all redundant. Accept the trade-offs out loud.</li>
+        <li><strong>Separate the sampled from the eventful.</strong> A gate is re-evaluated every poll; a deviation is one event with a life cycle. Fusing them was the root of the old bug.</li>
+        <li><strong>Key state on the identity that survives.</strong> Business ids get recreated; the hardware serial does not. Everything else is an attribute that can be remapped.</li>
+        <li><strong>Read the code before trusting the decision record.</strong> "The association persists by itself" was false. The correction became a new ADR, not a footnote.</li>
+        <li><strong>Absence of data must be hunted, and expiry is not a detector.</strong> A sparse index and a one-minute sweep cost nearly nothing at any fleet size; item expiry guarantees 48 hours.</li>
+        <li><strong>The state change is the lock; the stream is the outbox.</strong> A conditional write and a change stream give exactly-once transitions and at-least-once delivery with no coordination service.</li>
+        <li><strong>Prefer the failure direction you can see.</strong> A lost acknowledgement causes a redundant escalation, never a missed one. A missing row would be silent; an orphan row gets reported.</li>
+        <li><strong>Declare which comparison is authoritative.</strong> The alert can be stale; the record cannot. Two roles make a stale copy harmless.</li>
+        <li><strong>Reconcile, don't command.</strong> A lost event must never mean a fridge nobody watches. Keyset walks and a completeness marker make the reconciler safe to run.</li>
+        <li><strong>Shadow first, then a switch at the granularity people can explain.</strong> Per site, not per fridge.</li>
+        <li><strong>Find the cost that decides the design.</strong> It was one ingestion rule. Compute was noise.</li>
+      </ol>
+    </article>
+  </main>
+
+  <footer id="footer-slot"></footer>
+
+  <script src="../js/site.js"></script>
+</body>
+</html>
