@@ -51,7 +51,8 @@ description: Use when work on a Java service touches the Postgres schema —
       <p>We have 51 skills today, grouped by what they do. The folders are only for humans browsing the repo; the agent discovers skills flat.</p>
 
       <figure>
-        <svg class="diagram" viewBox="0 0 720 300" role="img" aria-label="Skills catalog grouped in six categories">
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 300" role="img" aria-label="Skills catalog grouped in six categories">
           <defs>
             <marker id="arr-cat" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
@@ -130,6 +131,7 @@ description: Use when work on a Java service touches the Postgres schema —
           <line x1="536" y1="62" x2="536" y2="80" class="d-line" marker-end="url(#arr-cat)"/>
           <line x1="654" y1="62" x2="654" y2="80" class="d-line" marker-end="url(#arr-cat)"/>
         </svg>
+        </div>
         <figcaption>The catalog. Half of it is <code>build/</code>: one skill per layer of a Spring Boot service (style, JPA, migrations, REST, security, outbox, DynamoDB, files, audit) plus the frontend stack. The folders are for browsing; the installer flattens them.</figcaption>
       </figure>
 
@@ -176,7 +178,8 @@ cd bs-agents-skills
       <p><code>install</code> does a lot for one command. It installs or upgrades the prerequisites (git, Node.js for the plugin hooks, cron) with whatever package manager it finds &mdash; brew, dnf, apt, pacman, zypper. It adds an hourly cron job. It runs the first sync immediately.</p>
 
       <figure>
-        <svg class="diagram" viewBox="0 0 720 340" role="img" aria-label="Hourly sync flow from origin/main to every machine">
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 340" role="img" aria-label="Hourly sync flow from origin/main to every machine">
           <defs>
             <marker id="arr-sync" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
@@ -256,6 +259,7 @@ cd bs-agents-skills
 
           <text x="360" y="305" text-anchor="middle" class="d-text-sm">Everything below the dashed line is installed from origin/main. Your checkout is fast-forwarded only as a courtesy, and only if it is on main and clean.</text>
         </svg>
+        </div>
         <figcaption>One sync. The fetch is cheap and runs every hour; the install only runs when <code>origin/main</code> has actually moved.</figcaption>
       </figure>
 
@@ -287,7 +291,8 @@ cd bs-agents-skills
       <h3>The outer loop</h3>
 
       <figure>
-        <svg class="diagram" viewBox="0 0 720 250" role="img" aria-label="Outer polling loop of the Ralph Loop">
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 250" role="img" aria-label="Outer polling loop of the Ralph Loop">
           <defs>
             <marker id="arr-outer" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
@@ -336,6 +341,7 @@ cd bs-agents-skills
 
           <text x="360" y="238" text-anchor="middle" class="d-text-sm">Each poll step is network-facing; a blip costs one poll, never the loop, and never a needs-human label.</text>
         </svg>
+        </div>
         <figcaption>The orchestrator polls Jira every five minutes. Nothing here trusts on-disk state over Bitbucket's: a PR merged by a human while no loop was running is discovered and its ticket closed on the next poll.</figcaption>
       </figure>
 
@@ -351,7 +357,8 @@ cd bs-agents-skills
       <p>Every phase is a <em>separate</em> headless <code>claude -p</code> invocation with a fresh context and a purpose-built prompt. The orchestrator never trusts an agent's prose claim of success; the only channel from a worker back to the orchestrator is a file on disk.</p>
 
       <figure>
-        <svg class="diagram" viewBox="0 0 720 560" role="img" aria-label="Per-ticket pipeline state machine">
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 560" role="img" aria-label="Per-ticket pipeline state machine">
           <defs>
             <marker id="arr-pipe" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
@@ -436,6 +443,7 @@ cd bs-agents-skills
           <text x="130" y="460" text-anchor="middle" class="d-text-sm">no BUILD_OK after address ≠ "nothing</text>
           <text x="130" y="473" text-anchor="middle" class="d-text-sm">to change": reported as unaddressed</text>
         </svg>
+        </div>
         <figcaption>One ticket, four agent sessions. Orange boxes are agents; white boxes are deterministic Python. Every hand-off between the two is a file the worker must write.</figcaption>
       </figure>
 
@@ -538,7 +546,8 @@ cd bs-agents-skills
       <h2>How the Three Fit</h2>
 
       <figure>
-        <svg class="diagram" viewBox="0 0 720 230" role="img" aria-label="Skills, sync and the loop reinforcing each other">
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 230" role="img" aria-label="Skills, sync and the loop reinforcing each other">
           <defs>
             <marker id="arr-fit" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
@@ -567,6 +576,7 @@ cd bs-agents-skills
 
           <text x="360" y="40" text-anchor="middle" class="d-text-sm">A merged change to the skills repo alters every agent session company-wide. That is the point, and the blast radius.</text>
         </svg>
+        </div>
         <figcaption>The feedback loop. The Ralph Loop is the harshest consumer of the skills, because nobody is watching it work.</figcaption>
       </figure>
 

@@ -2,41 +2,48 @@
   var inPosts = window.location.pathname.includes("/posts/");
   var home = inPosts ? "../index.html" : "./";
   var posts = inPosts ? "./index.html" : "posts/index.html";
-
   var imgRoot = inPosts ? "../" : "./";
+
   var nav = document.getElementById("nav-slot");
   nav.innerHTML =
-    '<a href="' +
-    home +
-    '" class="logo-icon-link"><img src="' + imgRoot + 'img/icon.png" alt="" class="logo-icon"></a>' +
-    '<a href="' +
-    home +
-    '" class="logo-text">Bradicode</a>' +
+    '<a href="' + home + '" class="brand" aria-label="Bradicode home">' +
+    '<img src="' + imgRoot + 'img/icon.png" alt="" class="logo-icon">' +
+    '<span class="logo-text">Bradicode</span>' +
+    '</a>' +
     '<div class="nav-right">' +
-    '<a href="' +
-    home +
-    '" class="nav-link">Home</a>' +
-    '<a href="' +
-    posts +
-    '" class="nav-link">Posts</a>' +
-    '<button class="theme-toggle" aria-label="Toggle theme">&#9790;</button>' +
+    '<a href="' + home + '" class="nav-link' + (inPosts ? '' : ' active') + '">Home</a>' +
+    '<a href="' + posts + '" class="nav-link' + (inPosts ? ' active' : '') + '">Posts</a>' +
+    '<button class="theme-toggle" aria-label="Toggle theme" title="Toggle theme">&#9790;</button>' +
     "</div>";
 
   var toggleBtn = nav.querySelector(".theme-toggle");
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    toggleBtn.innerHTML = theme === "dark" ? "&#9788;" : "&#9790;";
+  }
   toggleBtn.addEventListener("click", function () {
-    var html = document.documentElement;
-    var current = html.getAttribute("data-theme");
+    var current = document.documentElement.getAttribute("data-theme");
     var next = current === "dark" ? "light" : "dark";
-    html.setAttribute("data-theme", next);
-    localStorage.setItem("theme", next);
-    toggleBtn.innerHTML = next === "dark" ? "&#9788;" : "&#9790;";
+    applyTheme(next);
+    try { localStorage.setItem("theme", next); } catch (e) {}
   });
 
-  var saved = localStorage.getItem("theme");
+  var saved = null;
+  try { saved = localStorage.getItem("theme"); } catch (e) {}
   var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  var theme = saved || (prefersDark ? "dark" : "light");
-  document.documentElement.setAttribute("data-theme", theme);
-  toggleBtn.innerHTML = theme === "dark" ? "&#9788;" : "&#9790;";
+  applyTheme(saved || (prefersDark ? "dark" : "light"));
+
+  // Wide tables inside articles scroll horizontally on small screens
+  // instead of stretching the page.
+  var tables = document.querySelectorAll("article table");
+  for (var i = 0; i < tables.length; i++) {
+    var t = tables[i];
+    if (t.parentNode.classList.contains("table-wrap")) continue;
+    var wrap = document.createElement("div");
+    wrap.className = "table-wrap";
+    t.parentNode.insertBefore(wrap, t);
+    wrap.appendChild(t);
+  }
 
   var footer = document.getElementById("footer-slot");
   footer.innerHTML =
