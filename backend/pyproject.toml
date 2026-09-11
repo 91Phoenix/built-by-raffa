@@ -1,0 +1,36 @@
+[project]
+name = "blog-api"
+version = "0.1.0"
+description = "Bradicode blog API: posts endpoint and a DeepSeek-backed chat over the posts"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.60,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "python-dotenv>=1.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["blog_api*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: hits the real DeepSeek API (needs DEEPSEEK_API_KEY)"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]

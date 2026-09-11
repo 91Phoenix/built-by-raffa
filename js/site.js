@@ -2,6 +2,8 @@
   var inPosts = window.location.pathname.includes("/posts/");
   var home = inPosts ? "../index.html" : "./";
   var posts = inPosts ? "./index.html" : "posts/index.html";
+  var chat = inPosts ? "../chat.html" : "chat.html";
+  var onChat = window.location.pathname.endsWith("/chat.html");
   var imgRoot = inPosts ? "../" : "./";
 
   var nav = document.getElementById("nav-slot");
@@ -11,8 +13,9 @@
     '<span class="logo-text">Bradicode</span>' +
     '</a>' +
     '<div class="nav-right">' +
-    '<a href="' + home + '" class="nav-link' + (inPosts ? '' : ' active') + '">Home</a>' +
+    '<a href="' + home + '" class="nav-link' + (inPosts || onChat ? '' : ' active') + '">Home</a>' +
     '<a href="' + posts + '" class="nav-link' + (inPosts ? ' active' : '') + '">Posts</a>' +
+    '<a href="' + chat + '" class="nav-link' + (onChat ? ' active' : '') + '">Ask</a>' +
     '<button class="theme-toggle" aria-label="Toggle theme" title="Toggle theme">&#9790;</button>' +
     "</div>";
 

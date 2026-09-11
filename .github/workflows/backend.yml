@@ -1,0 +1,105 @@
+name: Backend
+
+# Lint, test and build the Lambda zip on every change; validate the
+# Terraform; deploy from main only when the AWS secrets exist.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "infra/**"
+      - "posts/**"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - "infra/**"
+      - "posts/**"
+      - ".github/workflows/backend.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: make venv
+      - name: Lint
+        run: make lint
+      - name: Test
+        run: make test
+      - name: Build Lambda zip
+        run: make package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blog_api.zip
+          path: backend/build/blog_api.zip
+          retention-days: 7
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
+  deploy:
+    # Only from main, only when the repo has the deploy secrets. Needs an
+    # IAM role trusted by GitHub's OIDC provider: see infra/README.md.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [test, terraform]
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: infra
+    env:
+      HAS_SECRETS: ${{ secrets.AWS_ROLE_ARN != '' && secrets.DEEPSEEK_API_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.HAS_SECRETS == 'true'
+      - uses: actions/download-artifact@v4
+        if: env.HAS_SECRETS == 'true'
+        with:
+          name: blog_api.zip
+          path: backend/build
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: env.HAS_SECRETS == 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-1' }}
+      - uses: hashicorp/setup-terraform@v3
+        if: env.HAS_SECRETS == 'true'
+        with:
+          terraform_version: "1.15.8"
+      - name: Terraform apply
+        if: env.HAS_SECRETS == 'true'
+        env:
+          TF_VAR_deepseek_api_key: ${{ secrets.DEEPSEEK_API_KEY }}
+          TF_VAR_allowed_origin: ${{ vars.ALLOWED_ORIGIN || 'https://bradicode.com' }}
+        run: |
+          cp backend.tf.example backend.tf
+          terraform init -input=false
+          terraform apply -auto-approve -input=false
+          echo "API URL: $(terraform output -raw function_url)"
+      - name: Skipped
+        if: env.HAS_SECRETS != 'true'
+        run: echo "AWS_ROLE_ARN / DEEPSEEK_API_KEY secrets not set; skipping deploy."
