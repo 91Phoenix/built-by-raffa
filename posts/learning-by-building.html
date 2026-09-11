@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Why I Started Writing &mdash; Bradicode</title>
+  <title>Ten Years of Not Writing It Down &mdash; Bradicode</title>
   <link rel="stylesheet" href="../style.css">
 </head>
 <body>
@@ -14,75 +14,133 @@
 
     <article>
       <div class="post-header">
-        <h1>Why I Started Writing</h1>
+        <h1>Ten Years of Not Writing It Down</h1>
         <div class="post-meta">
           <span>April 2026</span>
           <span class="dot">&middot;</span>
-          <span>12 min read</span>
+          <span>8 min read</span>
         </div>
       </div>
 
-      <p>I've been writing software professionally for the better part of a decade. I've built microservice frameworks, worked on distributed build systems serving hundreds of thousands of builds per month, and led a team through periods of intense growth. And yet &mdash; I've never really written any of it down.</p>
+      <p>I have built microservice frameworks other engineers depended on, taken a distributed CI system from 80,000 builds a month to over 400,000, and led a team through the growth that made that necessary. I have debugged a build scheduler at 2am and explained to a room of stakeholders why infrastructure work that ships nothing visible was the right quarter to spend. In roughly a decade of doing this, the number of those lessons I wrote down anywhere someone else could read is approximately zero.</p>
 
-      <p>This blog is my attempt to fix that.</p>
+      <p>That is a strange thing to notice about yourself. The knowledge is not gone &mdash; it is in my hands, in the instinct that says <em>this will page someone in six months</em>. But instinct does not transfer, and it does not survive me changing jobs. This blog is the correction.</p>
 
-      <h2>Starting in Bologna</h2>
+      <p>Here is the short version of where the instinct came from, and the one thread I only saw when I lined it all up.</p>
 
-      <p>My journey into computer science started in 2010 at the University of Bologna. I came in curious and left with both a Bachelor's and a Master's degree, finishing 110/110 cum laude with a thesis on microservice architectures &mdash; back when "microservices" was still a contested idea and not yet the default architectural choice.</p>
+      <hr>
 
-      <p>Studying gave me the vocabulary and the mental models, but even then I could feel the gap between understanding something in a classroom and making it work under real constraints. That tension would become a running theme.</p>
+      <h2>Bologna: The Vocabulary</h2>
 
-      <h2>Ferrero, Reply, and Learning by Doing</h2>
+      <p>I started computer science at the University of Bologna in 2010 and left with a Bachelor's and a Master's, 110/110 cum laude, with a thesis on microservice architectures &mdash; back when microservices were a contested idea rather than the default answer.</p>
 
-      <p>In 2016 I started my professional career with an internship at Ferrero in Luxembourg. It was my first real taste of how software gets built inside a large organization &mdash; the design docs, the meetings that could have been emails, the compromise between what's elegant and what ships.</p>
+      <p>University gave me the vocabulary and the mental models, and I do not undersell that: knowing the name of a thing is what lets you look it up at 2am. What it did not give me was any feel for how those models bend under real constraints &mdash; a deadline, a legacy system, a team that disagrees. That gap between understanding something and making it work became the running theme of everything after.</p>
 
-      <p>After that, I moved to Milan to join Reply, a consulting company, where I worked with CheBanca! &mdash; a FinTech company. The project was right in my wheelhouse: exploring microservice architectures and building frameworks so that the wider engineering department could spin up microservices easily, scalably, and securely. It was infrastructure work, but with a product mindset &mdash; we weren't just building for ourselves, we were building for dozens of other engineers who depended on our abstractions.</p>
+      <h2>Ferrero and Reply: Building for Other Engineers</h2>
 
-      <p>That experience taught me something I hadn't fully grasped in school: <strong>the hardest part of building software isn't the code itself, it's making it work for other people.</strong></p>
+      <p>My first professional taste was an internship at Ferrero in Luxembourg in 2016: my introduction to how software actually gets built inside a large organisation. The design docs. The meetings that could have been emails. The permanent negotiation between what is elegant and what ships this quarter.</p>
 
-      <h2>Dublin and Murex</h2>
+      <p>Then Milan, and Reply, on a project with CheBanca! that landed squarely in my thesis territory &mdash; building frameworks so the wider engineering department could stand up microservices quickly, safely and consistently. Infrastructure work with a product mindset, because the users were engineers and there were dozens of them depending on our abstractions.</p>
 
-      <p>The Reply stint was short, because I wanted to move abroad again. I landed in Dublin at Murex, a leader in capital markets software. I joined the risk control team, working with scrum methodologies &mdash; real sprint planning, real retros, real ownership over features from start to finish.</p>
+      <p>That is where school stopped being the reference point:</p>
 
-      <p>I developed features, handled maintenance, jumped into production support rotations, and mentored engineers. But one of the things I'm most proud of from that period is the innovation sprints. Murex gave engineers allocated time to explore new technologies and propose ideas for the company. I used those sprints to prototype things I thought could make a real difference &mdash; and some of them actually did.</p>
+      <blockquote>The hardest part of building software is not the code. It is making the code work for people who were not in the room when you designed it.</blockquote>
 
-      <p>It was during this time that I started noticing how much I learned when I had to articulate my thinking to someone else. Mentoring, proposing ideas, defending technical decisions &mdash; those moments forced clarity in a way that quietly writing code never did.</p>
+      <p>An abstraction that only its author can use is not an abstraction. It is a private joke with an API.</p>
+
+      <h2>Dublin and Murex: Learning by Explaining</h2>
+
+      <p>The Reply stint was short, because I wanted to be abroad again. I landed in Dublin at Murex, a leader in capital markets software, on the risk control team &mdash; real scrum, real ownership of features end to end, production support rotations, maintenance, mentoring.</p>
+
+      <p>The part I am proudest of is the innovation sprints. Murex gave engineers allocated time to explore new technology and pitch ideas to the company. I used them to prototype things I thought could matter, and some of them did.</p>
+
+      <p>But the durable lesson was smaller and more uncomfortable: I learned more in the hours I spent articulating my thinking to someone else than in the weeks I spent quietly writing code. Mentoring, pitching, defending a technical decision to someone who was not convinced &mdash; every one of those forces you to find the part of your reasoning you had been skipping. Writing code lets you keep the hand-wave. Explaining it does not.</p>
 
       <h2>HubSpot: Scaling the Build</h2>
 
-      <p>In 2020, in the middle of COVID, I joined HubSpot. I met my team in person more than a year after starting. HubSpot was growing fast &mdash; partly because of the pandemic accelerating the shift to digital, and that growth put enormous pressure on everything, including the build system.</p>
+      <p>I joined HubSpot in 2020, mid-COVID, and met my team in person more than a year after my start date. The company was growing fast &mdash; the pandemic had accelerated the shift to digital &mdash; and that growth was pressing on everything, including the build system.</p>
 
-      <p>I joined the Build team, responsible for HubSpot's internal CI &mdash; a fully in-house, distributed system that was originally built by a small team who were also responsible for the deployment system. These were complex distributed systems built incredibly fast, and as HubSpot grew, many of the original assumptions started breaking. The Maven dependency tree was getting deeper, the build volume was exploding, and the infrastructure was struggling to keep up.</p>
+      <p>My team owned HubSpot's internal CI: a fully in-house distributed system, originally built at speed by a small group who also owned deployment. Impressive engineering under time pressure, and like all such engineering, built on assumptions. By the time I arrived the Maven dependency tree had grown deeper than those assumptions allowed, build volume was climbing, and critical incidents were frequent.</p>
 
-      <p>When I joined, the system was unstable &mdash; critical issues were frequent, and the team was small. Over the next two and a half years, I went from Software Engineer to Senior Software Engineer to Tech Lead. I worked on optimizations and features that made the system significantly more reliable. I grew the team from 3 to 5, including an intern rotation. And together we took the CI from roughly 80,000 builds per month to over 400,000 &mdash; while decreasing critical incidents and cutting artifact storage costs.</p>
+      <p>Over two and a half years I went from Software Engineer to Senior to Tech Lead. We took the system from roughly 80,000 builds a month to over 400,000, while <em>decreasing</em> critical incidents and cutting artifact storage costs, and I grew the team from three to five including an intern rotation.</p>
 
-      <p>The numbers tell part of the story, but the real lessons were in how we got there: debugging distributed system failures at 2am, making hard tradeoffs between throughput and isolation, convincing stakeholders that investing in infrastructure would pay off, and learning to lead a team through ambiguity when the "right" answer wasn't obvious.</p>
+      <p>The numbers are the part that fits on a CV. The lessons were all in how we got there: debugging distributed failures in the middle of the night, trading throughput against isolation knowing both choices would hurt somewhere, convincing stakeholders that a quarter with no visible features was the right investment, and leading a team through problems where nobody in the room knew the answer yet. None of which I wrote down.</p>
 
-      <h2>Back to Italy, and a New Challenge</h2>
+      <h2>Metrics, and the Thing I Got Wrong</h2>
 
-      <p>In June 2023, for personal reasons, I moved back to Italy &mdash; but kept working for HubSpot. Remote-first made that possible, and the change of scenery coincided with a change of focus.</p>
+      <p>In June 2023 I moved back to Italy for personal reasons and stayed with HubSpot, remote. The change of country coincided with a change of problem: I joined the DevEx Metrics team.</p>
 
-      <p>I transitioned to the DevEx Metrics team. The original mandate was based on the DORA metrics paper &mdash; four metrics that were supposed to tell you how well your engineering org was performing. But pretty quickly, we realized DORA wasn't telling us the whole story. So we charted our own path.</p>
+      <p>The original mandate came from the DORA paper &mdash; four metrics that were supposed to tell you how well an engineering organisation was doing. It took us very little time to conclude that they did not, at least not on their own, so we charted our own path and built an application that surfaced engineering productivity insights at three granularities: individual, team, leadership.</p>
 
-      <p>We built an application that provided engineering productivity insights at different granularities &mdash; for individual contributors, for teams, and for leadership. It caught on. People used it heavily to understand and improve how their teams operated. But it also revealed something uncomfortable: <strong>metrics are powerful, and powerful things get misused.</strong> Some managers started using the numbers for performance reviews, which sounds reasonable in theory but is dangerously reductive in practice. A metric without managerial context is just a number &mdash; and numbers without context make poor judges of people.</p>
+      <p>It worked. People used it heavily, and teams genuinely saw things about themselves they could not see before. Which is exactly when it became a problem.</p>
 
-      <p>That tension between quantitative and qualitative stuck with me. And it led to something I'm genuinely proud of.</p>
+      <div class="callout">
+        <div class="callout-label">Scar</div>
+        <p>Some managers started using our numbers in performance reviews. Nobody asked us, and nothing in the product stopped them. In theory it sounds defensible &mdash; you have data, why not use it. In practice a metric stripped of its managerial context is just a number, and numbers make terrible judges of people. We had built something powerful and shipped it without deciding what it was <em>not</em> for. That is a design decision, and declining to make it does not mean it goes unmade; it means your users make it for you.</p>
+      </div>
 
-      <p>Last year, I proposed an idea for HubSpot's internal hackathon: what if instead of just showing metrics, we built something that could <em>describe</em> engineering productivity in human terms? I formed a team, ended up merging with another team with a complementary vision, and together we built an application that consumed the data we already had access to and generated qualitative descriptions of an individual's engineering productivity.</p>
+      <p>That tension between the quantitative and the qualitative is what led to the work I am most proud of. For HubSpot's internal hackathon last year I pitched an idea: instead of only <em>showing</em> metrics, what if we could <em>describe</em> engineering productivity in human terms? I formed a team, merged with another team chasing a complementary vision, and we built an application that consumed data we already had and generated qualitative narratives about an individual's engineering work.</p>
 
-      <p>The hackathon was a success &mdash; we got more votes than the second-place finisher by a wide margin. But what happened after is what mattered. My team shipped it to production for everyone at HubSpot. We then evolved it into an agentic system that produces genuinely high-quality narratives around engineering work. Some of the most respected engineers in the company reached out to tell us how useful it was.</p>
+      <p>We won by a wide margin over second place, which was fun, and largely beside the point. What mattered is what happened next: my team shipped it to production for everyone at HubSpot, then evolved it into an agentic system producing narratives good enough that some of the most respected engineers in the company wrote to us unprompted to say so.</p>
 
-      <p>This project crystallized something for me: <strong>the most impactful things I've built are the ones that take raw information and make it understandable to people.</strong> Frameworks that let other engineers move faster. Metrics that help teams see what they couldn't see before. A tool that turns data into a story someone can actually use.</p>
+      <h2>The Thread</h2>
+
+      <p>Lining those up, the work I am proudest of is all the same shape, and I did not notice for years.</p>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 230" role="img" aria-label="Frameworks, metrics and narratives as three instances of turning raw material into something a person can act on">
+          <defs>
+            <marker id="arr-thread" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+
+          <text x="360" y="30" text-anchor="middle" class="d-text-sm">Three projects, a decade apart, one shape</text>
+
+          <rect x="35" y="52" width="150" height="52" rx="5" class="d-box-soft"/>
+          <text x="110" y="73" text-anchor="middle" class="d-text">distributed systems</text>
+          <text x="110" y="91" text-anchor="middle" class="d-text-sm">Reply / CheBanca!</text>
+
+          <rect x="285" y="52" width="150" height="52" rx="5" class="d-box-soft"/>
+          <text x="360" y="73" text-anchor="middle" class="d-text">raw engineering data</text>
+          <text x="360" y="91" text-anchor="middle" class="d-text-sm">DevEx Metrics</text>
+
+          <rect x="535" y="52" width="150" height="52" rx="5" class="d-box-soft"/>
+          <text x="610" y="73" text-anchor="middle" class="d-text">the same data again</text>
+          <text x="610" y="91" text-anchor="middle" class="d-text-sm">hackathon &rarr; production</text>
+
+          <line x1="110" y1="108" x2="110" y2="138" class="d-line-accent" marker-end="url(#arr-thread)"/>
+          <line x1="360" y1="108" x2="360" y2="138" class="d-line-accent" marker-end="url(#arr-thread)"/>
+          <line x1="610" y1="108" x2="610" y2="138" class="d-line-accent" marker-end="url(#arr-thread)"/>
+
+          <rect x="35" y="142" width="150" height="52" rx="5" class="d-box-accent"/>
+          <text x="110" y="163" text-anchor="middle" class="d-text-inv">a framework</text>
+          <text x="110" y="181" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">others ship faster</text>
+
+          <rect x="285" y="142" width="150" height="52" rx="5" class="d-box-accent"/>
+          <text x="360" y="163" text-anchor="middle" class="d-text-inv">a dashboard</text>
+          <text x="360" y="181" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">teams see themselves</text>
+
+          <rect x="535" y="142" width="150" height="52" rx="5" class="d-box-accent"/>
+          <text x="610" y="163" text-anchor="middle" class="d-text-inv">a narrative</text>
+          <text x="610" y="181" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">a story you can use</text>
+
+          <text x="360" y="218" text-anchor="middle" class="d-text-sm">Take something raw and hand back something a person can act on. That is the job I keep choosing.</text>
+        </svg>
+        </div>
+        <figcaption>The technology changed three times. The problem did not.</figcaption>
+      </figure>
+
+      <p>Each role contributed a piece. Bologna gave me the vocabulary. Ferrero showed me how enterprises actually decide things. Reply taught me to build for engineers who were not in the room. Murex taught me that explaining a thing is how you find out whether you understand it. HubSpot made me an engineer who can hold a distributed system in my head and a lead who can hold a team through ambiguity. The metrics work taught me that shipping something powerful without deciding what it is not for is itself a decision.</p>
 
       <h2>Why Write</h2>
 
-      <p>Looking back at all of this, I realize I've spent years accumulating experiences that I rarely stop to reflect on. Every role taught me something different &mdash; Bologna gave me the foundation, Ferrero showed me how enterprises work, Reply taught me to build for other engineers, Murex sharpened my product and communication instincts, and HubSpot pushed me to grow as both an engineer and a leader. The DevEx and hackathon work reinforced that I care most about making complex things understandable.</p>
+      <p>So: this blog does two things. It <strong>reflects on what I have learned</strong>, because the instinct is worth more written down than carried around. And it <strong>documents what I am still learning</strong>, which matters just as much &mdash; a decade in, I am still building side projects, still hitting walls, still having the "wait, how does this actually work?" moment at eleven at night.</p>
 
-      <p>I started this blog because I want a place to do two things: <strong>reflect on what I've learned</strong> and <strong>document what I'm still learning</strong>. The second part matters just as much as the first. Even with years of experience, I'm still building side projects, still hitting walls, still having those "wait, how does this actually work?" moments. The projects haven't stopped &mdash; and neither has the learning.</p>
+      <p>There is also the selfish reason, and it is the one Murex taught me: I do not fully know what I think about a system until I have had to explain it to somebody. Writing is the cheapest way to force that, and unlike a mentoring session, the artifact outlives the conversation.</p>
 
-      <p>Expect technical deep dives, honest post-mortems, some "I wasted a weekend on this" stories, and practical takes on what actually worked and what didn't.</p>
-
-      <p>Thanks for reading.</p>
+      <p>Expect technical deep dives, honest post-mortems, the occasional "I wasted a weekend on this and here is the actual cause", and practical takes on what worked and what did not &mdash; including the scars, because those are the only part of the story that is genuinely hard to get anywhere else.</p>
     </article>
   </main>
 
