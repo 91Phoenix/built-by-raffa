@@ -94,7 +94,7 @@ jobs:
         if: env.HAS_SECRETS == 'true'
         env:
           TF_VAR_deepseek_api_key: ${{ secrets.DEEPSEEK_API_KEY }}
-          TF_VAR_allowed_origin: ${{ vars.ALLOWED_ORIGIN || 'https://bradicode.com' }}
+          TF_VAR_allowed_origin: ${{ vars.ALLOWED_ORIGIN || 'https://bradicode.dev' }}
         run: |
           cp backend.tf.example backend.tf
           terraform init -input=false

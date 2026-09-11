@@ -15,12 +15,12 @@ def test_read_cards_collects_slug_date_title_excerpt_tags(site_dir):
 
 def test_build_content_writes_index_and_one_markdown_per_post(site_dir, tmp_path):
     out = tmp_path / "content"
-    build_content(site_dir, out, site_url="https://bradicode.com")
+    build_content(site_dir, out, site_url="https://bradicode.dev")
 
     index = json.loads((out / "index.json").read_text())
     assert [p["slug"] for p in index["posts"]] == ["crawling-with-scrapy", "second-post"]
     first = index["posts"][0]
-    assert first["url"] == "https://bradicode.com/posts/crawling-with-scrapy.html"
+    assert first["url"] == "https://bradicode.dev/posts/crawling-with-scrapy.html"
     assert first["tags"] == ["python", "scrapy"]
     assert first["read_time"] == "16 min read"
 

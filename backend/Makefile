@@ -1,5 +1,5 @@
 PY := .venv/bin/python
-SITE_URL ?= https://bradicode.com
+SITE_URL ?= https://bradicode.dev
 BUILD := build
 ZIP := $(BUILD)/blog_api.zip
 

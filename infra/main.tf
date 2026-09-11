@@ -57,16 +57,12 @@ resource "aws_lambda_function" "api" {
   ]
 }
 
+# CORS is handled by the code (ALLOWED_ORIGIN), not here: with both, every
+# response carried two Access-Control-Allow-Origin headers and browsers
+# reject that.
 resource "aws_lambda_function_url" "api" {
   function_name      = aws_lambda_function.api.function_name
   authorization_type = "NONE"
-
-  cors {
-    allow_origins = [var.allowed_origin]
-    allow_methods = ["GET", "POST"]
-    allow_headers = ["content-type"]
-    max_age       = 86400
-  }
 }
 
 # Public invoke through the URL only; nothing else may call the function.
