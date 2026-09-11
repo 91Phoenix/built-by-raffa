@@ -7,7 +7,7 @@ from blog_api.content import ContentRepository
 @pytest.fixture
 def repo(site_dir, tmp_path):
     out = tmp_path / "content"
-    build_content(site_dir, out, site_url="https://bradicode.com")
+    build_content(site_dir, out, site_url="https://bradicode.dev")
     return ContentRepository(out)
 
 

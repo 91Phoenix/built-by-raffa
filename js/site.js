@@ -3,7 +3,7 @@
   var home = inPosts ? "../index.html" : "./";
   var posts = inPosts ? "./index.html" : "posts/index.html";
   var chat = inPosts ? "../chat.html" : "chat.html";
-  var onChat = window.location.pathname.endsWith("/chat.html");
+  var onChat = /\/chat(\.html)?$/.test(window.location.pathname);
   var imgRoot = inPosts ? "../" : "./";
 
   var nav = document.getElementById("nav-slot");

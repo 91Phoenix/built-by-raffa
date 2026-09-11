@@ -31,7 +31,7 @@ variable "chat_model" {
 variable "allowed_origin" {
   description = "Origin allowed by CORS. The blog's public URL in production; '*' while testing."
   type        = string
-  default     = "https://bradicode.com"
+  default     = "https://bradicode.dev"
 }
 
 variable "reserved_concurrency" {

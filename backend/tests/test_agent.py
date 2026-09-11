@@ -11,7 +11,7 @@ from blog_api.content import ContentRepository
 @pytest.fixture
 def repo(site_dir, tmp_path):
     out = tmp_path / "content"
-    build_content(site_dir, out, site_url="https://bradicode.com")
+    build_content(site_dir, out, site_url="https://bradicode.dev")
     return ContentRepository(out)
 
 
@@ -88,7 +88,7 @@ def test_runs_tools_and_reports_read_posts_as_sources(repo):
         {
             "slug": "crawling-with-scrapy",
             "title": "The Bugs I Couldn't See: Rewriting a Scraper",
-            "url": "https://bradicode.com/posts/crawling-with-scrapy.html",
+            "url": "https://bradicode.dev/posts/crawling-with-scrapy.html",
         }
     ]
     # usage accumulates across rounds

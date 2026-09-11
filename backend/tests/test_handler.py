@@ -25,19 +25,19 @@ class FakeAgent:
 @pytest.fixture
 def app(site_dir, tmp_path):
     out = tmp_path / "content"
-    build_content(site_dir, out, site_url="https://bradicode.com")
+    build_content(site_dir, out, site_url="https://bradicode.dev")
     repo = ContentRepository(out)
     agent = FakeAgent(
         result=ChatResult(
             answer="He did.",
-            sources=[{"slug": "s", "title": "T", "url": "https://bradicode.com/posts/s.html"}],
+            sources=[{"slug": "s", "title": "T", "url": "https://bradicode.dev/posts/s.html"}],
             usage={"prompt_tokens": 1, "completion_tokens": 1},
         )
     )
-    return handler_module.App(repo, agent, allowed_origin="https://bradicode.com"), agent
+    return handler_module.App(repo, agent, allowed_origin="https://bradicode.dev"), agent
 
 
-def event(method, path, body=None, origin="https://bradicode.com"):
+def event(method, path, body=None, origin="https://bradicode.dev"):
     headers = {"content-type": "application/json"}
     if origin:
         headers["origin"] = origin
@@ -112,10 +112,10 @@ def test_cors_headers_and_preflight(app):
     a, _ = app
     res = a.handle(event("OPTIONS", "/chat"))
     assert res["statusCode"] == 204
-    assert res["headers"]["access-control-allow-origin"] == "https://bradicode.com"
+    assert res["headers"]["access-control-allow-origin"] == "https://bradicode.dev"
     assert "POST" in res["headers"]["access-control-allow-methods"]
     got = a.handle(event("GET", "/posts"))
-    assert got["headers"]["access-control-allow-origin"] == "https://bradicode.com"
+    assert got["headers"]["access-control-allow-origin"] == "https://bradicode.dev"
 
 
 def test_unknown_route_and_method(app):
