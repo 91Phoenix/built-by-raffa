@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Where Did the Build Time Go? Tracing a Distributed CI System &mdash; Bradicode</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <nav id="nav-slot"></nav>
+
+  <main>
+    <a href="index.html" class="back-link">&larr; All posts</a>
+
+    <article>
+      <div class="post-header">
+        <h1>Where Did the Build Time Go? Tracing a Distributed CI System</h1>
+        <div class="post-meta">
+          <span>September 2026</span>
+          <span class="dot">&middot;</span>
+          <span>12 min read</span>
+        </div>
+      </div>
+
+      <p>"The build took 22 minutes." That sentence arrived in our support channel several times a day, and for a long time we could not answer the only question that follows it: <em>22 minutes of what?</em></p>
+
+      <p>The build itself &mdash; the compiler, the tests &mdash; was often four of those minutes. The rest was distributed somewhere across a webhook that waited in a queue, a scheduler that took its time picking the event up, a module discovery phase parsing build configs, a pod that had not been scheduled yet because the cluster was full, an upstream module the build was waiting on, and a finish event that took a while to be processed after the container had already exited. Six candidates, no evidence, and a support conversation that always ended with "we'll look into it".</p>
+
+      <p>So we built tracing for it. Not application tracing of HTTP requests &mdash; that existed &mdash; but tracing of the <strong>build as the unit of work</strong>, spanning several services, a queue, a Kubernetes cluster, and a lifecycle measured in minutes rather than milliseconds. This post is the design, what it revealed, and the second half of the story: the cluster controller whose API traffic the tracing exposed.</p>
+
+      <p>Anonymized as usual: no employer, no service names. The shape is what transfers.</p>
+
+      <hr>
+
+      <h2>Why Off-the-Shelf Tracing Didn't Fit As-Is</h2>
+
+      <p>Standard distributed tracing assumes a request: it starts, it fans out, it ends, it lives for milliseconds, and you sample it because you have millions and care about the shape of the distribution.</p>
+
+      <p>A build violates all of that:</p>
+
+      <ul>
+        <li>It lives for <strong>minutes to hours</strong>, and the interesting part is often the gap between two spans, not a span.</li>
+        <li>It crosses a process boundary through a <strong>queue and a database row</strong>, not a header on an HTTP call.</li>
+        <li>Nobody wants a sampled answer to "why was <em>my</em> build slow". Sampling is the wrong default when each trace corresponds to a human waiting.</li>
+        <li>The questions are as much analytical as diagnostic: "what is the median queue wait per cluster this month" is a SQL question, not a trace-viewer question.</li>
+      </ul>
+
+      <p>So we kept the tracing API &mdash; spans, tags, a method interceptor that traces annotated methods and pulls identifiers out of the arguments &mdash; and replaced everything underneath it.</p>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 300" role="img" aria-label="Trace pipeline: instrumented services emit spans to Kafka, land in object storage, are queried with SQL, and become per-build insight documents">
+          <defs>
+            <marker id="arr-tr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+            <marker id="arr-tr-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+
+          <rect x="10" y="40" width="120" height="70" rx="8" class="d-box"/>
+          <text x="70" y="64" text-anchor="middle" class="d-text-b">scheduler</text>
+          <text x="70" y="82" text-anchor="middle" class="d-text-sm">push, queue,</text>
+          <text x="70" y="96" text-anchor="middle" class="d-text-sm">discovery, launch</text>
+
+          <rect x="10" y="130" width="120" height="70" rx="8" class="d-box"/>
+          <text x="70" y="154" text-anchor="middle" class="d-text-b">executor</text>
+          <text x="70" y="172" text-anchor="middle" class="d-text-sm">per-step segments</text>
+          <text x="70" y="186" text-anchor="middle" class="d-text-sm">converted to spans</text>
+
+          <line x1="130" y1="75" x2="185" y2="110" class="d-line" marker-end="url(#arr-tr)"/>
+          <line x1="130" y1="165" x2="185" y2="130" class="d-line" marker-end="url(#arr-tr)"/>
+
+          <rect x="185" y="100" width="120" height="44" rx="8" class="d-box-accent"/>
+          <text x="245" y="120" text-anchor="middle" class="d-text-inv">span topic</text>
+          <text x="245" y="136" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">protobuf over Kafka</text>
+
+          <line x1="305" y1="122" x2="345" y2="122" class="d-line" marker-end="url(#arr-tr)"/>
+
+          <rect x="345" y="100" width="120" height="44" rx="8" class="d-box-soft"/>
+          <text x="405" y="120" text-anchor="middle" class="d-text-b">object storage</text>
+          <text x="405" y="136" text-anchor="middle" class="d-text-sm">partitioned by day</text>
+
+          <line x1="465" y1="122" x2="505" y2="122" class="d-line" marker-end="url(#arr-tr)"/>
+
+          <rect x="505" y="100" width="100" height="44" rx="8" class="d-box"/>
+          <text x="555" y="120" text-anchor="middle" class="d-text-b">SQL engine</text>
+          <text x="555" y="136" text-anchor="middle" class="d-text-sm">ad-hoc + daily job</text>
+
+          <line x1="555" y1="144" x2="555" y2="180" class="d-line-accent" marker-end="url(#arr-tr-a)"/>
+
+          <rect x="455" y="180" width="200" height="50" rx="8" class="d-box-outline"/>
+          <text x="555" y="200" text-anchor="middle" class="d-text-b">build insight documents</text>
+          <text x="555" y="216" text-anchor="middle" class="d-mono">insights/daily/{branch}/{y}/{m}/{d}</text>
+
+          <line x1="455" y1="205" x2="380" y2="205" class="d-line" marker-end="url(#arr-tr)"/>
+          <rect x="240" y="180" width="140" height="50" rx="8" class="d-box"/>
+          <text x="310" y="200" text-anchor="middle" class="d-text-b">insights endpoint</text>
+          <text x="310" y="216" text-anchor="middle" class="d-text-sm">+ HTML charts</text>
+
+          <text x="10" y="262" class="d-text-sm">Later: the executor and scheduler write insight documents directly as builds finish &mdash; the daily job stops being the only producer.</text>
+          <text x="10" y="280" class="d-text-sm">Three layers, three lifetimes: transport (hours), raw traces (months), insights (indefinite, tiny).</text>
+        </svg>
+        </div>
+        <figcaption>Collection, storage and presentation are deliberately separate. The Kafka topic decouples producers from consumers; object storage plus SQL makes trace data analysable in aggregate; the insight document is the small, stable thing the product actually reads.</figcaption>
+      </figure>
+
+      <h3>Spans over Kafka, not to a collector</h3>
+
+      <p>The tracer's span reporter was replaced with one that converts spans to a protobuf message and publishes them to a topic. That one change bought three things: producers never block on a tracing backend being up, retention becomes a topic configuration rather than a vendor setting, and &mdash; the real reason &mdash; the topic already lands in object storage, which makes every trace queryable with SQL.</p>
+
+      <p>Two schema decisions I would make again. First, the span's key-value tags are all <strong>strings, with a separate type field</strong>, rather than a union of typed values. Traces are written by many services and read by ad-hoc queries; a uniform column type makes the SQL trivial and the schema boring. Second, the tag keys are an <strong>enum</strong>, not free strings. The moment tag keys are free-form, you have twelve spellings of "module" and no aggregation.</p>
+
+      <h3>Significant events: the tags that made analysis possible</h3>
+
+      <p>Raw spans tell you when methods ran. They do not tell you what the build was <em>doing</em>, which is what a human asks. So the model has a small enum of <strong>significant events</strong> &mdash; the state transitions worth measuring &mdash; and the converters tag spans with them.</p>
+
+      <p>The single most valuable one, and it took a round of confused analysis to discover it was missing: distinguishing <em>waiting for a previous build of the same module</em> from <em>queued because the cluster was busy</em>. Both look like "not running yet". One is a serialization constraint the system imposes deliberately; the other is a capacity problem. We had been averaging them together and drawing the wrong conclusion about what to fix.</p>
+
+      <p>A second one, subtler: recording the end of the last executor step as its own event, separate from the module build's end. The gap between them is the time between the container finishing and the scheduler processing the finish event &mdash; time that is invisible to the executor, invisible to the user, and entirely ours. It turned out to be worth measuring.</p>
+
+      <hr>
+
+      <h2>From Traces to Insights: the Document That Made It Usable</h2>
+
+      <p>Traces are the raw material, not the product. Nobody wants to write SQL to learn why their branch is slow. So a job read the previous day's traces for every branch that built, assembled a per-build breakdown in memory, and wrote one small <strong>insight document</strong> per branch per day into object storage under a date-partitioned key.</p>
+
+      <p>That document is what the API serves and what the charts render: a timeline of the build and a per-module breakdown, rendered server-side as an HTML page with interactive charts. Unglamorous and effective &mdash; an engineer could open their branch and see the shape of their build without learning a query language.</p>
+
+      <p>Three refinements, each caused by production reality rather than design:</p>
+
+      <ul>
+        <li><strong>Empty results are a normal case.</strong> The first version of the job assumed every branch it asked about had traces. Branches go quiet; the query returns nothing; the job fell over. Resilience to "no data" is a feature, not an error path.</li>
+        <li><strong>Sanitize before you visualize.</strong> A handful of traces per day carried malformed build numbers. The job initially failed the whole day's insights on them. Skipping the bad trace and producing insights for the rest is almost always the correct trade in an analytics pipeline.</li>
+        <li><strong>Make the target date a parameter.</strong> Obvious in hindsight; essential in practice. Every backfill, every "re-run yesterday because we fixed the converter" depends on it.</li>
+      </ul>
+
+      <p>Then the architecture shifted: instead of a nightly job being the only producer, insight documents started being written <strong>as builds finished</strong>. Same document, same location, same readers &mdash; but available immediately. The nightly job stayed for reprocessing. That is the nice property of having made the insight document a first-class artifact in storage: you can change who writes it without changing anything that reads it.</p>
+
+      <hr>
+
+      <h2>What the Traces Actually Showed: Delay Metrics and SLAs</h2>
+
+      <p>Once the trace data existed, the useful output was not a flame graph. It was a small set of <strong>delay metrics</strong>, each measuring one hand-off:</p>
+
+      <table>
+        <thead>
+          <tr><th>Delay</th><th>From &rarr; to</th><th>Who owns it</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Push delay</td><td>Commit pushed &rarr; event processed</td><td>Webhook path and queue depth</td></tr>
+          <tr><td>Discovery delay</td><td>Event processed &rarr; module discovery starts</td><td>Scheduler capacity</td></tr>
+          <tr><td>Discovery-to-launch</td><td>Discovery done &rarr; repo build launched</td><td>Scheduler logic</td></tr>
+          <tr><td>Executor wait</td><td>Module build runnable &rarr; container running</td><td>Cluster capacity and pod provisioning</td></tr>
+          <tr><td>Upstream wait</td><td>Runnable-but-blocked &rarr; unblocked</td><td>The dependency graph, not the infrastructure</td></tr>
+          <tr><td>Finish delay</td><td>Last executor step ends &rarr; build marked finished</td><td>Event processing</td></tr>
+        </tbody>
+      </table>
+
+      <p>This decomposition is the entire payoff of the project. It turned "CI is slow" into six numbers with six different owners, which meant we could <strong>define an SLA per stage</strong> and argue about capacity with evidence instead of anecdote. It also made prioritization mechanical: fix the stage with the worst p95 against its target, not the stage the loudest person complained about.</p>
+
+      <p>We added configurable thresholds so builds exceeding them logged themselves for investigation, which is a much better on-call signal than an aggregate dashboard: a dashboard tells you the p95 moved, a threshold log tells you which build to open.</p>
+
+      <div class="callout">
+        <div class="callout-label">The rule I'd keep</div>
+        <p>Instrumentation must never be able to break the thing it instruments. The tracing interceptor wraps everything it does in exception handling: a failure to trace is a dropped trace, never a failed build. That sounds obvious until you notice how many tracing libraries will happily throw out of a method they were only supposed to be observing.</p>
+      </div>
+
+      <hr>
+
+      <h2>The Other Half: the Controller That Was Talking to Kubernetes Too Much</h2>
+
+      <p>Build pods were created and destroyed by a controller sitting between the scheduler and the cluster. It decided how many pods of each size each cluster needed, created them, watched them, and cleaned them up. Under load it got slow, and when it got slow, builds queued &mdash; which showed up, precisely, as executor-wait delay in the traces above.</p>
+
+      <p>The root cause was not clever. It was talking to the Kubernetes API far more than it needed to.</p>
+
+      <ol>
+        <li><strong>Listing pods once per cycle instead of once per question.</strong> Demand calculation fetched the pod list repeatedly within a single execution &mdash; roughly twice per container size plus once per executor cluster. Caching the list for the duration of one cycle reduced that to two calls, total.</li>
+        <li><strong>Deleting a code path nobody needed.</strong> A semaphore mechanism in the pod watcher had been made redundant by an earlier change but was still issuing calls &mdash; on the order of 50 to 60 requests per second, millions per day, for nothing. This is the most common shape of infrastructure waste I have seen: not a bad algorithm, a <em>leftover</em>.</li>
+        <li><strong>Watching five times less often.</strong> The watch-and-wait loop ran ten times a second. Two was indistinguishable in behaviour, and the delay became configurable so the next person does not have to redeploy to find out.</li>
+        <li><strong>Counting only pods that consume capacity.</strong> Completed pods were being counted against pod demand, so the controller throttled creation because of pods that had already finished and were holding no resources.</li>
+      </ol>
+
+      <h3>The thread pool that blocked itself</h3>
+
+      <p>The subtlest problem: pod creations and deletions were published on one in-process event bus with one shared thread pool. When the Kubernetes API slowed down at peak &mdash; which is exactly when the system is busiest &mdash; delete operations saturated the pool, and <em>create</em> operations queued behind them. The cluster had capacity; builds waited anyway.</p>
+
+      <p><strong>Two independent pools fixed it</strong>, plus asynchronous listeners so a single slow event cannot block the others behind it. This is a general rule worth stating plainly: <em>operations with different latency profiles and different urgency do not belong in the same pool.</em> A deletion is cleanup; a creation is a person waiting. Sharing a pool means the cleanup can starve the person.</p>
+
+      <h3>And then the refactor that made it ordinary</h3>
+
+      <p>Eventually the watcher components came out entirely and the deletion logic moved into the controller, with creation and deletion done the same way, in one place, following the standard worker pattern used by every other service we ran. Plus explicit handling for init-container failures, which had previously been a silent way for a pod to be counted as alive forever.</p>
+
+      <p>That last change delivered no measurable improvement on the day it shipped, and it was one of the most valuable things we did: it turned a bespoke component that only one person fully understood into an ordinary one with the same shape as everything else on the team.</p>
+
+      <h3>Then measure the controller itself</h3>
+
+      <p>Once the structure was right, we instrumented it: pod creation latency and rate, deletion latency and rate, how long fetching pod information takes, and &mdash; the one I would add first next time &mdash; <strong>the delay introduced by the event bus itself</strong>, separately for creates and deletes. Without that last metric, a queue inside your own process is invisible: every individual operation looks fast, and the system is still slow.</p>
+
+      <p>Two bugs the metrics surfaced. Pod creation exceptions (an admission webhook denial, for instance) were not incrementing the create counter, so the controller's own idea of capacity drifted from reality. And nothing was reporting creation failures to the error tracker, so a class of failure was only visible in logs nobody was reading.</p>
+
+      <h3>The cost lever, in one line</h3>
+
+      <p>After all of that, the change with the biggest financial impact was reverting the CPU allocation per executor pod to half of what it had been &mdash; about a 50% reduction in the cost of the build fleet &mdash; once the throttling data showed the larger allocation was not buying the throughput it was supposed to. The lesson is not "make pods smaller". It is that <strong>a resource allocation set during an incident is a hypothesis nobody re-tested</strong>, and re-testing it is often the cheapest money you will ever find.</p>
+
+      <hr>
+
+      <h2>Key Takeaways</h2>
+
+      <ol>
+        <li><strong>Trace the unit of work your users name.</strong> For CI that is the build, not the HTTP request. The interesting part is the gaps between spans.</li>
+        <li><strong>Ship spans through your existing event backbone.</strong> Producers stop depending on a tracing backend, retention becomes a topic setting, and the data lands where SQL can reach it.</li>
+        <li><strong>Enumerate tag keys and keep values uniformly typed.</strong> Free-form tags make aggregate analysis impossible later.</li>
+        <li><strong>Name the state transitions, not just the method calls.</strong> A small enum of significant events is what turns spans into answers.</li>
+        <li><strong>Separate "blocked by a dependency" from "waiting for capacity".</strong> They look identical and they have different owners.</li>
+        <li><strong>Make a small, stable derived document the product's interface.</strong> Then you can change who produces it &mdash; nightly job, then real-time &mdash; without touching readers.</li>
+        <li><strong>An analytics job must tolerate empty and malformed input.</strong> Skip the bad trace, produce the rest, and make the target date a parameter.</li>
+        <li><strong>Decompose latency into per-stage delays with owners.</strong> That is what makes an SLA arguable and prioritization mechanical.</li>
+        <li><strong>Instrumentation must never break the instrumented.</strong> Catch everything inside the interceptor.</li>
+        <li><strong>Most API-traffic waste is leftovers, not algorithms.</strong> Look for the code path a previous change made redundant.</li>
+        <li><strong>Never share a thread pool between cleanup and user-facing work.</strong> Cleanup will starve the user at exactly the worst moment.</li>
+        <li><strong>Measure your internal queues.</strong> If every operation is fast and the system is slow, the wait is in a pool you are not instrumenting.</li>
+        <li><strong>Re-test resource allocations set under pressure.</strong> Halving a fleet's CPU request after checking the throttling data was the cheapest win of the year.</li>
+      </ol>
+    </article>
+  </main>
+
+  <footer id="footer-slot"></footer>
+
+  <script src="../js/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Out of the Dumb Zone: Engineering Agents That Summarize Real Work &mdash; Bradicode</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <nav id="nav-slot"></nav>
+
+  <main>
+    <a href="index.html" class="back-link">&larr; All posts</a>
+
+    <article>
+      <div class="post-header">
+        <h1>Out of the Dumb Zone: Engineering Agents That Summarize Real Work</h1>
+        <div class="post-meta">
+          <span>September 2026</span>
+          <span class="dot">&middot;</span>
+          <span>25 min read</span>
+        </div>
+      </div>
+
+      <p>The task sounds simple enough to be a weekend project: given everything an engineer did in a quarter &mdash; the changes they authored, the reviews they left, the issues they worked, the support threads they answered &mdash; write a few paragraphs that describe their work the way a colleague would.</p>
+
+      <p>It is not a weekend project. It is the hardest engineering problem I have worked on that contains almost no algorithms. The data platform underneath it I have written about <a href="s3-as-source-of-truth.html">separately</a>; this post is only about the agents: five versions of the same feature, each one fixing what the previous one got wrong about context, cost, consistency or trust.</p>
+
+      <p>Anonymized as usual &mdash; no employer, no service names. What transfers is the sequence, because I think most teams building agents on real data walk it in the same order, and it is cheaper to read about it than to discover it.</p>
+
+      <hr>
+
+      <h2>Version 1 &mdash; Chunk It, and Summarize the Summaries</h2>
+
+      <p>The first version is the one everybody writes. Fetch everything the person did. It does not fit in the context window. So chunk it, summarize each chunk, then summarize the summaries.</p>
+
+      <p>This works, in the sense that it produces text. Two things are wrong with it, and only one is obvious.</p>
+
+      <p>The obvious one is cost and latency: you are paying for every token of raw material, twice, and a quarter of activity for a busy engineer is a lot of tokens.</p>
+
+      <p>The non-obvious one is that <strong>arbitrary chunks destroy the structure the reader cares about</strong>. If you chunk by date, one migration that took three weeks gets split across four chunks, each of which produces a bland paragraph about "various changes", and the final pass summarizes four bland paragraphs into one blander one. The output is fluent, accurate in the narrow sense, and says nothing.</p>
+
+      <p>The fix that made the difference was not a better model. It was <strong>grouping by theme before summarizing</strong>: cluster the contributions into coherent bodies of work first, summarize each theme from its own items, then compose the themes. Same number of model calls, completely different output, because the unit the summarizer sees is now the unit a human recognizes. "Led the migration of the notification path off the legacy queue" instead of "made changes in March".</p>
+
+      <blockquote>Hierarchical summarization is only as good as the hierarchy. Chunking is a memory constraint; grouping is a modelling decision. Do not let the first one silently become the second.</blockquote>
+
+      <h3>Four data types, four agents, four prompts</h3>
+
+      <p>The other structural decision, and the one I would make earliest if I started again: <strong>one agent per <em>kind</em> of contribution, each with its own prompt, its own tools and its own idea of what evidence means</strong> &mdash; authored changes, code reviews, issues, and chat threads.</p>
+
+      <p>The temptation is the opposite. One agent, one prompt, "summarize this person's work", and let the model figure out the differences. It does not, and the reason is that these four sources disagree about almost everything that matters to a summarizer:</p>
+
+      <table>
+        <thead>
+          <tr><th>Source</th><th>Unit of evidence</th><th>What the prompt has to get right</th><th>Failure if you use a generic prompt</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Authored changes</strong></td><td>One change, plus its description and diff digest</td><td>What changed and why; escalate to the diff when the description is thin</td><td>Restates commit titles</td></tr>
+          <tr><td><strong>Code reviews</strong></td><td>One review, in someone else's change</td><td>The contribution is the <em>influence</em> &mdash; what the review caught, what changed because of it &mdash; not the subject matter of the change</td><td>Describes other people's work as if it were theirs</td></tr>
+          <tr><td><strong>Issues</strong></td><td>A thread with a life cycle and a resolution</td><td>Their role in it: reported, triaged, diagnosed, fixed, closed</td><td>Summarizes the bug, not the person</td></tr>
+          <tr><td><strong>Chat threads</strong></td><td>A slice of a multi-party conversation</td><td>Which messages are theirs, what followed them, whether the thread converged after</td><td>Rewards whoever typed the most</td></tr>
+        </tbody>
+      </table>
+
+      <p>Reviews are the clearest case. Forty reviews and three authored changes are both real quarters, and a prompt written for authorship will describe the reviewer as though they built the forty things they commented on. The review agent needs the opposite instinct: the change is context, the <em>comment</em> is the contribution, and the interesting signal is what happened to the change afterwards.</p>
+
+      <p>Separating them buys three things beyond output quality:</p>
+
+      <ul>
+        <li><strong>Each prompt gets tuned against its own evidence.</strong> When the evaluation set is sliced by source, a regression in review summaries is visible instead of being averaged away by good authorship summaries.</li>
+        <li><strong>Each agent gets its own tools and its own model tier.</strong> The chat agent needs message-level structure and careful reasoning; the authorship agent needs the diff-escalation tool. Neither has to carry the other's instructions in context.</li>
+        <li><strong>They run and fail independently</strong> &mdash; which is also what makes the asynchronous runtime below able to return partial results.</li>
+      </ul>
+
+      <p>The composition step is then the only place that has to hold all four at once, and its job is narrow: weigh the sources against each other and write the overall narrative. That is a much easier prompt to write than one that has to be four prompts wearing a trenchcoat.</p>
+
+      <hr>
+
+      <h2>Version 2 &mdash; Stop Stuffing the Context, Give the Agent Tools</h2>
+
+      <p>The second realization: pushing all the data at the model is the wrong direction of control. Most of what you push is never needed for the conclusion, and you pay for it in money, latency and &mdash; the expensive one &mdash; attention.</p>
+
+      <p>So we inverted it. The agent got <strong>tools with pagination</strong>: list contributions for a period, fetch the detail of one, fetch the linked discussion. The agent decides what to open.</p>
+
+      <p>Tool design rules we converged on, all of them learned by having them wrong first:</p>
+
+      <ul>
+        <li><strong>List endpoints return identifiers and a handful of fields, never bodies.</strong> A list call that returns full diffs is context-stuffing with extra steps.</li>
+        <li><strong>Pagination is a context control, not an API convenience.</strong> Cap the page size server-side. A model given <code>limit</code> will eventually ask for a very large one, and the tool must be the thing that says no.</li>
+        <li><strong>Ordering must be deterministic and meaningful</strong> &mdash; by relevance where you can compute it, by time otherwise. Non-deterministic ordering makes runs irreproducible, which makes evaluation meaningless.</li>
+        <li><strong>Filters beat pages.</strong> Every filter you add (by repository, by theme, by date range) is a page the agent never has to fetch.</li>
+        <li><strong>The tool description is part of the prompt.</strong> It is in the context on every turn, and it is where the model learns when <em>not</em> to call the tool. We later optimized these descriptions automatically &mdash; see below &mdash; and the gains were comparable to optimizing the prompts themselves.</li>
+      </ul>
+
+      <h3>Escalate to the expensive evidence only when the cheap evidence is thin</h3>
+
+      <p>The tool that paid for itself fastest was the one that reads the <em>diff</em>.</p>
+
+      <p>Most changes come with a description, and when the description is good, it is by far the cheapest and best evidence available: a human already did the summarization, in the right vocabulary, at the right altitude. The agent should use it and move on.</p>
+
+      <p>But descriptions vary wildly. Plenty of changes ship with a title, a ticket reference and nothing else &mdash; and some of those are the most substantial work in the quarter, because the engineer who rewrote the scheduler's locking was concentrating on the scheduler's locking, not on writing prose about it. Summarizing from the description alone systematically under-describes exactly the work you most want to describe.</p>
+
+      <p>So the agent escalates, conditionally: when the available description is too thin to support a claim, it calls a tool that fetches the change itself &mdash; the file list, the shape of the diff, the review discussion &mdash; and reasons from that instead.</p>
+
+      <p>Three properties make this work rather than just move the cost around:</p>
+
+      <ul>
+        <li><strong>It is the exception, not the default.</strong> The majority of changes never trigger it. Fetching every diff for every contribution would be the most expensive possible version of this system; fetching the ones where the cheap evidence is insufficient costs a fraction and lifts the quality where quality was actually missing.</li>
+        <li><strong>The tool returns a <em>digest</em>, not raw bytes.</strong> Paths and the counts per area, the interesting hunks, the discussion &mdash; not four thousand lines of generated code, lockfile churn and formatting. The pre-processing rule from the next section applies with full force here: a program decides what part of a diff is worth a token before the model ever sees it.</li>
+        <li><strong>The escalation criterion belongs in the prompt and is worth tuning.</strong> "Fetch the diff when the description does not let you state what changed and why" is a judgement call, and the boundary moves the cost curve a long way in both directions. It was one of the instructions the optimization loop later improved on its own.</li>
+      </ul>
+
+      <p>The generalization I would take to any agent over mixed-quality data: <strong>rank your evidence sources by cost and let the agent walk down that list only as far as it needs to.</strong> Cheap summary first, expensive ground truth on demand. Uniform depth is either wasteful everywhere or shallow everywhere, and you rarely get to pick which.</p>
+
+      <hr>
+
+      <h2>Interlude &mdash; A Conversation Is Not a Document</h2>
+
+      <p>The source that broke the most assumptions was not code. It was conversations: support threads and issue discussions.</p>
+
+      <p>The naive treatment is to concatenate a thread and summarize it, which answers the question "what was this thread about". That is genuinely useful &mdash; and it is the wrong question, because the thing we needed was <em>what was this person's contribution to it</em>. Those are different summaries of the same text, and the first one is nearly useless for the second.</p>
+
+      <p>Consider a thirty-message thread about a failing deployment. Depending on which messages are theirs, a participant might have:</p>
+
+      <ul>
+        <li>asked the original question &mdash; they had the problem, they did not solve it;</li>
+        <li>diagnosed the cause in message eleven, after which the thread converged;</li>
+        <li>provided the fix, or provided the context that let someone else find the fix;</li>
+        <li>routed it &mdash; pulled in the team that owned the system, which is real and frequently invisible work;</li>
+        <li>been mentioned, and never replied at all.</li>
+      </ul>
+
+      <p>Every one of those produces the same thread-level summary and a completely different statement about the person. Getting this wrong is not a cosmetic error: it credits people for being present in busy channels and misses the person whose one message ended a three-hour incident.</p>
+
+      <p>What the analysis has to preserve, therefore, is the <strong>message-level structure</strong>: who wrote what, in what order, in reply to what, and what happened after. Concretely:</p>
+
+      <ol>
+        <li><strong>Keep authorship and position.</strong> The messages are attributed and ordered before they reach the model, and the person being summarized is marked in the transcript. Anonymized or flattened text makes the question unanswerable.</li>
+        <li><strong>Distinguish opening from resolving.</strong> The first message and the message the thread converges on play opposite roles, and only the ordering tells you which is which.</li>
+        <li><strong>Treat the <em>reaction</em> as evidence.</strong> What follows a message &mdash; the thread stopping, someone saying that fixed it, the issue closing shortly after &mdash; is the strongest available signal of impact, and it is structural, so a program can surface it.</li>
+        <li><strong>Do not reward volume.</strong> Ten clarifying replies are not more contribution than one correct diagnosis. Left alone, a summarizer will describe the person with the most text, because that is what it saw most of. This has to be stated explicitly in the prompt and checked explicitly in the evaluation.</li>
+        <li><strong>Resolve identity before reasoning.</strong> The same human has a chat handle, a source-control account and a directory entry. If those are not joined upstream, the agent sees three people and describes none of them correctly.</li>
+      </ol>
+
+      <div class="callout">
+        <div class="callout-label">The principle</div>
+        <p>For code, the artifact is the contribution. For a conversation, the artifact is the <em>thread</em> and the contribution is a slice of it &mdash; which means the summarization target and the evidence unit are different objects. Any pipeline that treats a discussion as one blob of text has already thrown away the only thing that made it worth summarizing per person.</p>
+      </div>
+
+      <hr>
+
+      <h2>Version 3 &mdash; Do in Code What Code Does Better</h2>
+
+      <p>The third version was mostly deletion of model calls.</p>
+
+      <p>A surprising share of what the early agents did was work a program does faster, cheaper and correctly every time: deduplicating records, dropping automated accounts, resolving a person to the team they were on <em>at the time</em>, joining a change to the deployment that shipped it, counting things, ranking by a relevance score, truncating a 4,000-line diff to the parts that carry signal.</p>
+
+      <p>None of that is judgement. All of it was being done, badly and expensively, inside a context window.</p>
+
+      <div class="callout">
+        <div class="callout-label">The rule</div>
+        <p>Use the model for judgement, and code for everything else. Judgement is: what were the themes, what mattered, how would you describe this to a colleague. Filtering, joining, counting, sorting, deduplicating and truncating are code. Every token of boilerplate you hand the model you pay for twice &mdash; once at the invoice, once in the attention budget you had left for the actual reasoning.</p>
+      </div>
+
+      <p>The practical effect of the pre-processing layer was that the agent's context went from "everything this person touched" to "these twelve candidate themes, with their strongest evidence attached, ranked". The quality went up because the model had room to think, and the cost went down by an order of magnitude. Those two usually trade against each other; here they did not, which is the signature of having been wasteful rather than ambitious.</p>
+
+      <h3>Context management: files, fresh sessions, compaction</h3>
+
+      <p>The related discipline is what to do when the work genuinely does not fit &mdash; a very active engineer, a whole team, a year rather than a quarter.</p>
+
+      <p>Three techniques, in the order we reach for them:</p>
+
+      <ol>
+        <li><strong>Write intermediate results to files and read them back deliberately.</strong> The per-theme summaries do not need to stay in the conversation; they need to exist when the composition step runs. Storage is memory that does not degrade.</li>
+        <li><strong>Start a fresh session per unit of work.</strong> One session per theme, with only that theme's evidence, beats one session that has seen everything. A fresh context is not a limitation to work around; it is a way to guarantee the model is looking at the right material.</li>
+        <li><strong>Compact when continuity is genuinely needed.</strong> Summarize the conversation so far into a short brief and continue from that, rather than carrying the raw history.</li>
+      </ol>
+
+      <p>The thing all three protect against is what I have come to call the <strong>dumb zone</strong>: the region where the context is technically within the model's window but well past the point where it reliably uses what is in it. Recall of material in the middle degrades, instructions given early get overridden by noise arriving later, and the failure is silent &mdash; you get a confident, fluent, subtly worse answer. There is no error, no truncation warning, nothing in a log. Just a decline in quality that only an evaluation harness will catch.</p>
+
+      <p>So: budget context like RAM. Know roughly what the working set is for each step, keep it well under the window rather than near it, and treat "it still fits" as a very weak argument.</p>
+
+      <hr>
+
+      <h2>Version 4 &mdash; The Judge, and What It Is Allowed to Reward</h2>
+
+      <p>By this point the system produced good output. Sometimes. The remaining problem was consistency: the same person's quarter, generated twice, could produce one excellent summary and one that was vague, or that leaned on a minor piece of work because it happened to have more text attached.</p>
+
+      <p>You cannot improve what you cannot score, and "is this a good description of someone's quarter" has no reference answer to diff against. So we built an <strong>LLM-as-judge</strong> harness: a fixed evaluation set, a rubric, and a judge model that scores each generated summary.</p>
+
+      <p>The rubric mattered more than the judge. The dimension that did the most work was <strong>evidence</strong>: does every substantive claim carry a link to the thing it came from &mdash; a pull request, a review, a support thread &mdash; and does the linked artifact actually support the claim?</p>
+
+      <p>Why that one, above fluency or coverage:</p>
+
+      <ul>
+        <li>It is the closest thing to an objective signal available. Link present, link resolves, link's content matches the sentence &mdash; those are checkable, and two of the three are checkable in code without a model at all.</li>
+        <li>It is what makes the output <em>usable</em>. A claim about a person's work that you cannot trace is not a summary, it is an opinion with good grammar.</li>
+        <li>It directly attacks the dangerous failure mode. These systems do not usually fail by being obviously wrong; they fail by being plausible. Requiring a citation per claim makes plausibility expensive.</li>
+      </ul>
+
+      <p>Practical notes on running a judge, all of which cost us something to learn:</p>
+
+      <ol>
+        <li><strong>Judge with a different model than the one generating</strong> where possible. Models have a measurable preference for their own output, and a judge that likes its own style rewards style.</li>
+        <li><strong>Check mechanically what you can check mechanically.</strong> Link presence, link resolution, whether cited artifacts belong to the person being summarized &mdash; all of that is a script. Save the model for "does this text match this evidence".</li>
+        <li><strong>Calibrate against humans once, properly.</strong> Have people score a sample, compare to the judge, and adjust the rubric until they correlate. A judge nobody has calibrated is a random number generator with a PhD voice.</li>
+        <li><strong>Version the eval set and freeze it.</strong> A score is only comparable across runs if the questions did not change.</li>
+        <li><strong>Gate on regression, not on absolute score.</strong> "Did this change make it worse" is answerable and useful; "is 7.4 good" is neither.</li>
+      </ol>
+
+      <hr>
+
+      <h2>Version 5 &mdash; Evolving the Prompts (and the Tool Descriptions)</h2>
+
+      <p>With a score in place, prompt engineering stops being taste and becomes optimization. And once it is optimization, doing it by hand is a strange choice.</p>
+
+      <p>We based this part of the work on <strong>GEPA</strong> &mdash; Genetic-Pareto reflective prompt evolution (<a href="https://arxiv.org/abs/2507.19457" target="_blank" rel="noopener noreferrer">arXiv:2507.19457</a>). The idea: run the system, capture the full trajectories including tool calls and their outputs, have a model <em>reflect in natural language</em> on what went wrong, propose edits to the instructions, test them against the evaluation set, and keep a Pareto frontier of candidates rather than a single best one, so complementary improvements can be recombined instead of competing.</p>
+
+      <p>The paper's headline result is the reason we took it seriously rather than treating prompt search as a toy: across their tasks, GEPA outperformed GRPO &mdash; a reinforcement learning approach &mdash; by around 10% on average and up to 20%, <em>while using up to 35&times; fewer rollouts</em>, and beat the leading prior prompt optimizer by over 10%. The interpretation I find convincing is the one they argue: a natural-language reflection on a failed trajectory carries far more information than a scalar reward does. A reward says "that was worth 0.3". A reflection says "it summarized the review work without citing a single review, because the instruction only demanded citations for authored changes".</p>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 300" role="img" aria-label="The improvement loop: run the agents against a frozen eval set, score with a judge, reflect on failures, propose prompt and tool description edits, keep a Pareto frontier">
+          <defs>
+            <marker id="arr-ev" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+            <marker id="arr-ev-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+
+          <rect x="20" y="30" width="150" height="56" rx="8" class="d-box"/>
+          <text x="95" y="52" text-anchor="middle" class="d-text-b">frozen eval set</text>
+          <text x="95" y="70" text-anchor="middle" class="d-text-sm">real people, real quarters</text>
+
+          <line x1="170" y1="58" x2="215" y2="58" class="d-line" marker-end="url(#arr-ev)"/>
+
+          <rect x="215" y="30" width="150" height="56" rx="8" class="d-box-accent"/>
+          <text x="290" y="52" text-anchor="middle" class="d-text-inv">agent run</text>
+          <text x="290" y="70" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">full trajectory captured</text>
+
+          <line x1="365" y1="58" x2="410" y2="58" class="d-line" marker-end="url(#arr-ev)"/>
+
+          <rect x="410" y="18" width="160" height="80" rx="8" class="d-box"/>
+          <text x="490" y="40" text-anchor="middle" class="d-text-b">judge + checks</text>
+          <text x="490" y="58" text-anchor="middle" class="d-text-sm">citations present &amp; valid</text>
+          <text x="490" y="74" text-anchor="middle" class="d-text-sm">coverage &middot; factuality</text>
+          <text x="490" y="90" text-anchor="middle" class="d-text-sm">different model than generator</text>
+
+          <line x1="490" y1="98" x2="490" y2="134" class="d-line-accent" marker-end="url(#arr-ev-a)"/>
+
+          <rect x="390" y="134" width="200" height="56" rx="8" class="d-box-soft"/>
+          <text x="490" y="156" text-anchor="middle" class="d-text-b">reflect on failures</text>
+          <text x="490" y="174" text-anchor="middle" class="d-text-sm">in natural language, not a scalar</text>
+
+          <line x1="390" y1="162" x2="330" y2="162" class="d-line" marker-end="url(#arr-ev)"/>
+
+          <rect x="150" y="134" width="180" height="56" rx="8" class="d-box-outline"/>
+          <text x="240" y="156" text-anchor="middle" class="d-text-b">propose edits</text>
+          <text x="240" y="174" text-anchor="middle" class="d-text-sm">prompts and tool descriptions</text>
+
+          <line x1="240" y1="134" x2="240" y2="98" class="d-line" marker-end="url(#arr-ev)"/>
+          <text x="252" y="118" class="d-text-sm">re-test</text>
+
+          <rect x="150" y="212" width="440" height="56" rx="8" class="d-box"/>
+          <text x="370" y="234" text-anchor="middle" class="d-text-b">Pareto frontier of candidates</text>
+          <text x="370" y="252" text-anchor="middle" class="d-text-sm">keep complementary winners, recombine &mdash; not a single champion</text>
+          <line x1="240" y1="190" x2="240" y2="212" class="d-line" marker-end="url(#arr-ev)"/>
+          <line x1="490" y1="190" x2="490" y2="212" class="d-line" marker-end="url(#arr-ev)"/>
+
+          <text x="20" y="240" class="d-text-sm">The artifact this</text>
+          <text x="20" y="256" class="d-text-sm">produces is text you</text>
+          <text x="20" y="272" class="d-text-sm">can read and review.</text>
+        </svg>
+        </div>
+        <figcaption>The loop that turns prompt engineering into optimization. Everything in it is cheap except the eval set, which is the part you must build by hand and then never change casually.</figcaption>
+      </figure>
+
+      <p>Crucially, this runs <strong>per agent</strong>. The authorship agent, the review agent, the issue agent and the chat agent each have their own prompt, their own tool descriptions and their own slice of the evaluation set, so each one is optimized against the failures that are actually its own. A single global score would have hidden exactly the problem we most wanted to fix &mdash; review summaries drifting into describing other people's changes &mdash; underneath a healthy average.</p>
+
+      <p>Two things surprised me in practice.</p>
+
+      <p>First, <strong>optimizing tool descriptions mattered as much as optimizing prompts</strong>. The description is the model's only documentation for a capability; a sentence clarifying when <em>not</em> to call a tool, or what the pagination actually returns, removed whole classes of wasteful trajectory. Most teams hand-write these once and never touch them again. They are prompt surface, and they should be in the optimization loop.</p>
+
+      <p>Second, <strong>the output of all this is text</strong>. No weights, no training infrastructure, no GPU budget, no model to host. The optimized artifact is a prompt and a set of tool descriptions that a human can read, review in a pull request, and revert. For a platform team that has to explain the system to its users, that reviewability is worth a great deal on its own &mdash; independently of the accuracy numbers.</p>
+
+      <hr>
+
+      <h2>The Economics: Evals Are What Let You Not Use the Newest Model</h2>
+
+      <p>Running an agent per person per period across a whole engineering organisation is not a demo budget. Cost is a design constraint, and it shows up as a specific discipline: <strong>the evaluation harness must run against several models, not just the newest one.</strong></p>
+
+      <p>The reasoning:</p>
+
+      <ul>
+        <li>Different steps need different capability. Theme clustering, per-theme summarization, final composition and judging are four jobs with four difficulty levels. Using one frontier model for all of them is paying premium rates for the easy three.</li>
+        <li>A prompt tuned exclusively against the newest model is quietly coupled to it. When it is deprecated, repriced or rate-limited, you find out how coupled.</li>
+        <li>You cannot safely downgrade a step without evidence, and the eval harness <em>is</em> the evidence. With it, "can this step run on the cheaper model?" is a ten-minute experiment with a number at the end. Without it, it is an argument.</li>
+      </ul>
+
+      <p>So the rule we adopted: every agent step declares a model, the evals run across the tiers, and a step uses the cheapest model that passes its bar. The frontier model is for the steps that genuinely need it &mdash; in our case, composition and judging &mdash; and not for extracting fields from a payload.</p>
+
+      <p>The same discipline covers the upgrade direction, which people forget. When a new model appears, the eval set tells you within an hour whether it is better <em>for your task</em>, rather than better on someone else's benchmark. Several times the honest answer was "not enough to justify the change".</p>
+
+      <hr>
+
+      <h2>The Runtime: Asynchronous by Construction</h2>
+
+      <p>None of this can run inside a request. A summary takes minutes: many model calls, tool calls, retries. Any design where a user's HTTP request is waiting for it is broken before it ships &mdash; and worse, a retry re-runs the whole expensive thing.</p>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 260" role="img" aria-label="Request creates a pending row, workers generate per-source summaries and post results, the client polls the state">
+          <defs>
+            <marker id="arr-as" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+            <marker id="arr-as-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+
+          <rect x="10" y="30" width="120" height="50" rx="8" class="d-box"/>
+          <text x="70" y="52" text-anchor="middle" class="d-text-b">user request</text>
+          <text x="70" y="70" text-anchor="middle" class="d-text-sm">returns immediately</text>
+
+          <line x1="130" y1="55" x2="175" y2="55" class="d-line" marker-end="url(#arr-as)"/>
+
+          <rect x="175" y="30" width="150" height="50" rx="8" class="d-box-accent"/>
+          <text x="250" y="52" text-anchor="middle" class="d-text-inv">summaries row</text>
+          <text x="250" y="70" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">PENDING</text>
+
+          <line x1="325" y1="55" x2="370" y2="55" class="d-line" marker-end="url(#arr-as)"/>
+
+          <rect x="370" y="30" width="120" height="50" rx="8" class="d-box-soft"/>
+          <text x="430" y="52" text-anchor="middle" class="d-text-b">task queue</text>
+          <text x="430" y="70" text-anchor="middle" class="d-text-sm">retry &middot; backoff</text>
+
+          <line x1="490" y1="55" x2="535" y2="55" class="d-line" marker-end="url(#arr-as)"/>
+
+          <rect x="535" y="14" width="170" height="26" rx="6" class="d-box"/>
+          <text x="620" y="32" text-anchor="middle" class="d-text-sm">worker &mdash; authored changes</text>
+          <rect x="535" y="44" width="170" height="26" rx="6" class="d-box"/>
+          <text x="620" y="62" text-anchor="middle" class="d-text-sm">worker &mdash; reviews</text>
+          <rect x="535" y="74" width="170" height="26" rx="6" class="d-box"/>
+          <text x="620" y="92" text-anchor="middle" class="d-text-sm">worker &mdash; issues &amp; threads</text>
+
+          <line x1="620" y1="100" x2="620" y2="132" class="d-line-accent" marker-end="url(#arr-as-a)"/>
+          <text x="632" y="120" class="d-text-sm">each posts its own result</text>
+
+          <rect x="420" y="132" width="285" height="48" rx="8" class="d-box-outline"/>
+          <text x="562" y="152" text-anchor="middle" class="d-text-b">row updated: PARTIAL &rarr; READY / FAILED</text>
+          <text x="562" y="170" text-anchor="middle" class="d-text-sm">permissions re-checked on read, not only on write</text>
+
+          <line x1="420" y1="156" x2="330" y2="156" class="d-line" marker-end="url(#arr-as)"/>
+
+          <rect x="175" y="132" width="150" height="48" rx="8" class="d-box"/>
+          <text x="250" y="152" text-anchor="middle" class="d-text-b">client polls</text>
+          <text x="250" y="170" text-anchor="middle" class="d-text-sm">shows real state, not a spinner</text>
+
+          <text x="10" y="212" class="d-text-sm">The state is a row, not a connection. A dropped browser tab, a redeploy or a worker crash costs nothing:</text>
+          <text x="10" y="230" class="d-text-sm">the request survives, the queue retries, and completed sources are never regenerated.</text>
+        </svg>
+        </div>
+        <figcaption>An ordinary asynchronous job architecture, which is the point. The interesting part of an agent feature is the prompt and the evals; the plumbing should be the boring thing your platform already does well.</figcaption>
+      </figure>
+
+      <p>Details worth copying:</p>
+
+      <ul>
+        <li><strong>The request is a row with a state, not an in-flight connection.</strong> Pending, running, partial, ready, failed. The UI renders the state honestly &mdash; "generating the review summary" beats a spinner that might already be dead.</li>
+        <li><strong>Each source agent is its own worker and posts its own result.</strong> Partial results are useful, and a failure in one source does not discard three that succeeded.</li>
+        <li><strong>Requests are deduplicated and results are cached with a policy.</strong> Two people asking for the same summary in the same hour is one generation. Regeneration is explicit, because a user who asks again usually wants a <em>new</em> answer, not the cached one.</li>
+        <li><strong>Permissions are checked at generation and again at read.</strong> Reporting lines change; a summary generated when someone was your report must not remain readable when they are not.</li>
+        <li><strong>Trajectories are stored.</strong> Every improvement in the previous sections depends on being able to look at what the agent actually did, on a real request, weeks later.</li>
+      </ul>
+
+      <hr>
+
+      <h2>The Same Machinery, Pointed at Money &mdash; and Then Not Shipped</h2>
+
+      <p>Once the pipeline existed, it was obviously reusable: pre-process programmatically, cluster, summarize with evidence, judge, tune. So we pointed it at a finance-adjacent question &mdash; estimating how engineering effort distributed across product features, the kind of number that feeds capitalization and planning.</p>
+
+      <p>Technically it worked. It combined availability data with contribution data, produced per-feature effort estimates with the evidence attached, rolled up per team, and was reviewable and editable by the people it described.</p>
+
+      <p>We decided not to take it further.</p>
+
+      <div class="callout">
+        <div class="callout-label">The decision</div>
+        <p>The output was defensible only with human review in the loop, and the pull towards using it <em>without</em> that review was strong &mdash; because a number in a spreadsheet does not carry its caveats with it. We had already learned, with the metrics product, what happens when something powerful ships without an explicit statement of what it is not for: managers used our figures in performance reviews, nobody asked us, and nothing in the product stopped them. An effort-allocation estimate lands in a context where the incentives to shape the input are immediate and obvious. So the right engineering decision was to stop, and to say why.</p>
+      </div>
+
+      <p>I count that as one of the better calls I have been part of, and it is worth saying plainly because the industry incentive runs the other way: the interesting question about an agent is not "can it produce this output" &mdash; increasingly the answer is yes &mdash; but "what happens to the people described by the output when someone treats it as authoritative". If the honest answer is "something bad, and the guard rails are advisory", the feature is not ready, however good the evals look.</p>
+
+      <hr>
+
+      <h2>Key Takeaways</h2>
+
+      <ol>
+        <li><strong>Summary-of-summaries is version one, not the design.</strong> Chunking is a memory constraint; grouping by theme is the modelling decision that makes the output mean something.</li>
+        <li><strong>One agent per data type, with its own prompt, tools and eval slice.</strong> Authored changes, reviews, issues and chat threads disagree about what counts as evidence and what counts as impact &mdash; a review prompt that borrows the authorship prompt credits people with other people's work.</li>
+        <li><strong>Optimize and score per agent, not globally.</strong> One blended score hides the source whose summaries are drifting.</li>
+        <li><strong>Invert the data flow: give tools with pagination instead of stuffing context.</strong> Cap page sizes server-side, order deterministically, and prefer filters over pages.</li>
+        <li><strong>Tool descriptions are prompt surface.</strong> They are in context every turn and they teach the model when not to call &mdash; put them in the optimization loop.</li>
+        <li><strong>Rank evidence by cost and escalate only when the cheap evidence is thin.</strong> A good change description is the best and cheapest summary you will get; fetch the diff when it is missing, return a digest rather than raw bytes, and tune the escalation criterion.</li>
+        <li><strong>A conversation is not a document.</strong> Summarizing a thread answers a different question from summarizing a person's contribution to it &mdash; keep authorship, ordering and what happened next, and never let volume stand in for impact.</li>
+        <li><strong>Use the model for judgement and code for everything else.</strong> Deduplicating, joining, counting, ranking and truncating are programs.</li>
+        <li><strong>Budget context like RAM.</strong> Files for intermediate state, a fresh session per unit of work, compaction when continuity is genuinely needed.</li>
+        <li><strong>The dumb zone is silent.</strong> Fitting in the window is not the same as being used well; only an eval harness detects the decline.</li>
+        <li><strong>Score before you tune.</strong> A frozen eval set and a judge turn taste into optimization.</li>
+        <li><strong>Make citations the primary rubric dimension.</strong> A claim about someone's work that cannot be traced is an opinion with good grammar &mdash; and link checks are largely mechanical.</li>
+        <li><strong>Judge with a different model, calibrate against humans once, gate on regression.</strong> An uncalibrated judge is a confident random number.</li>
+        <li><strong>Reflective prompt evolution is a serious optimizer.</strong> GEPA reports beating GRPO by ~10% on average with up to 35&times; fewer rollouts &mdash; natural-language reflection carries more signal than a scalar reward.</li>
+        <li><strong>The optimized artifact is reviewable text.</strong> No weights, no training infrastructure, and you can revert it in a pull request.</li>
+        <li><strong>Evals are what let you not use the newest model.</strong> Per-step model choice, cheapest that passes the bar, and an hour to evaluate whether a new release is actually better for your task.</li>
+        <li><strong>Agents are asynchronous jobs.</strong> A row with a state, one worker per source posting partial results, dedup, explicit regeneration, permissions at read time, trajectories stored.</li>
+        <li><strong>Ask what happens when someone treats the output as authoritative.</strong> If the guard rails are advisory and the answer is "something bad", not shipping is the engineering decision.</li>
+      </ol>
+    </article>
+  </main>
+
+  <footer id="footer-slot"></footer>
+
+  <script src="../js/site.js"></script>
+</body>
+</html>

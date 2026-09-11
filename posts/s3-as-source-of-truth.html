@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Object Storage as the Source of Truth: An Engineering Data Platform, and the Agents on Top of It &mdash; Bradicode</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <nav id="nav-slot"></nav>
+
+  <main>
+    <a href="index.html" class="back-link">&larr; All posts</a>
+
+    <article>
+      <div class="post-header">
+        <h1>Object Storage as the Source of Truth: An Engineering Data Platform, and the Agents on Top of It</h1>
+        <div class="post-meta">
+          <span>September 2026</span>
+          <span class="dot">&middot;</span>
+          <span>16 min read</span>
+        </div>
+      </div>
+
+      <p>After years on build infrastructure I moved to a team with a different problem: not "make this system fast", but "make this organisation legible". We collected engineering activity data &mdash; pull requests and reviews, deployments, incidents, support interrupts, tool usage &mdash; and turned it into something teams and leaders could act on, at three granularities: the individual, the team, the org.</p>
+
+      <p>The application people saw was charts. Underneath was an ETL platform: scheduled jobs pulling from a dozen sources, raw records landing in object storage, a framework ingesting them into the warehouse, and a modelling layer refining them into the tables the product queried. Later, on top of the same data, an agentic system that produced <em>narratives</em> instead of numbers &mdash; which turned out to be both the most interesting engineering and the most delicate product decision I have been part of.</p>
+
+      <p>This post is both halves. Anonymized: no employer, no service names, no internal links.</p>
+
+      <hr>
+
+      <h2>Part 1 &mdash; The Pipeline</h2>
+
+      <h3>Why object storage is the source of truth and the warehouse is not</h3>
+
+      <p>The first architectural decision, and the one everything else depends on: <strong>raw records land in object storage first, and the warehouse is a materialization of that</strong>, never the other way round.</p>
+
+      <p>It is tempting to skip the middle step. The sources have APIs, the warehouse has a loader, why keep a copy of everything in a bucket? Four reasons, all of which we hit:</p>
+
+      <ul>
+        <li><strong>Sources are lossy and rate-limited.</strong> Re-fetching two years of history from an API because you added a column is not a backfill, it is a project. Re-reading your own bucket is an afternoon.</li>
+        <li><strong>Schema evolution is continuous.</strong> Every model change is a reprocessing job. If the raw event is stored, reprocessing is deterministic and free of the source's opinions.</li>
+        <li><strong>Warehouses are for querying, not for remembering.</strong> Table rebuilds, migrations, cost-driven retention changes &mdash; all of these are safe when the warehouse is derived, and terrifying when it is primary.</li>
+        <li><strong>Auditability.</strong> When someone disputes a number &mdash; and with this kind of data, someone always disputes a number &mdash; you want to show them the record as the source produced it, not your interpretation of it.</li>
+      </ul>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 330" role="img" aria-label="Sources feed scheduled jobs, which write batched raw records to object storage; an ingestion framework loads the warehouse, a modelling layer refines it, and the app and agents read from there">
+          <defs>
+            <marker id="arr-etl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+            <marker id="arr-etl-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+
+          <rect x="10" y="24" width="128" height="128" rx="8" class="d-box"/>
+          <text x="74" y="46" text-anchor="middle" class="d-text-b">sources</text>
+          <text x="74" y="68" text-anchor="middle" class="d-text-sm">code review events</text>
+          <text x="74" y="84" text-anchor="middle" class="d-text-sm">deployments</text>
+          <text x="74" y="100" text-anchor="middle" class="d-text-sm">incidents &amp; alerts</text>
+          <text x="74" y="116" text-anchor="middle" class="d-text-sm">support threads</text>
+          <text x="74" y="132" text-anchor="middle" class="d-text-sm">tool usage APIs</text>
+
+          <line x1="138" y1="88" x2="178" y2="88" class="d-line" marker-end="url(#arr-etl)"/>
+
+          <rect x="178" y="52" width="128" height="72" rx="8" class="d-box-soft"/>
+          <text x="242" y="76" text-anchor="middle" class="d-text-b">scheduled jobs</text>
+          <text x="242" y="94" text-anchor="middle" class="d-text-sm">+ event workers</text>
+          <text x="242" y="110" text-anchor="middle" class="d-text-sm">parallel, idempotent</text>
+
+          <line x1="306" y1="88" x2="346" y2="88" class="d-line-accent" marker-end="url(#arr-etl-a)"/>
+
+          <rect x="346" y="44" width="150" height="88" rx="8" class="d-box-accent"/>
+          <text x="421" y="70" text-anchor="middle" class="d-text-inv">object storage</text>
+          <text x="421" y="88" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">source of truth</text>
+          <text x="421" y="108" text-anchor="middle" class="d-mono" style="fill:#fff">org/repo/yyyy/mm/dd</text>
+          <text x="421" y="124" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">daily batches, not one file per record</text>
+
+          <line x1="496" y1="88" x2="536" y2="88" class="d-line" marker-end="url(#arr-etl)"/>
+
+          <rect x="536" y="52" width="174" height="72" rx="8" class="d-box"/>
+          <text x="623" y="76" text-anchor="middle" class="d-text-b">ingestion framework</text>
+          <text x="623" y="94" text-anchor="middle" class="d-text-sm">bucket &rarr; warehouse tables</text>
+          <text x="623" y="110" text-anchor="middle" class="d-text-sm">schemas declared, not inferred</text>
+
+          <line x1="623" y1="124" x2="623" y2="160" class="d-line" marker-end="url(#arr-etl)"/>
+
+          <rect x="500" y="160" width="210" height="66" rx="8" class="d-box-soft"/>
+          <text x="605" y="182" text-anchor="middle" class="d-text-b">modelling layer</text>
+          <text x="605" y="200" text-anchor="middle" class="d-text-sm">cycle time &middot; lead time &middot; team-at-the-time</text>
+          <text x="605" y="216" text-anchor="middle" class="d-text-sm">dedup &middot; identity resolution</text>
+
+          <line x1="500" y1="193" x2="420" y2="193" class="d-line" marker-end="url(#arr-etl)"/>
+
+          <rect x="250" y="166" width="170" height="54" rx="8" class="d-box"/>
+          <text x="335" y="188" text-anchor="middle" class="d-text-b">application API</text>
+          <text x="335" y="206" text-anchor="middle" class="d-text-sm">charts at three granularities</text>
+
+          <line x1="335" y1="220" x2="335" y2="256" class="d-line-accent" marker-end="url(#arr-etl-a)"/>
+          <rect x="230" y="256" width="210" height="50" rx="8" class="d-box-outline"/>
+          <text x="335" y="278" text-anchor="middle" class="d-text-b">summary agents</text>
+          <text x="335" y="296" text-anchor="middle" class="d-text-sm">Part 2 of this post</text>
+
+          <line x1="230" y1="281" x2="150" y2="281" class="d-line" marker-end="url(#arr-etl)"/>
+          <rect x="10" y="256" width="140" height="50" rx="8" class="d-box-soft"/>
+          <text x="80" y="278" text-anchor="middle" class="d-text-sm">write lock table</text>
+          <text x="80" y="296" text-anchor="middle" class="d-text-sm">+ stale-lock watchdog</text>
+        </svg>
+        </div>
+        <figcaption>Everything to the right of object storage is derived and rebuildable. That is the property that makes schema changes routine instead of frightening.</figcaption>
+      </figure>
+
+      <h3>The small-files problem, which you will hit on day one</h3>
+
+      <p>The first version wrote one object per record: one pull request, one file. It is the obvious implementation and it is wrong in two directions at once. The warehouse loader chokes on enormous numbers of tiny files &mdash; per-file overhead dominates and ingestion falls behind. And backfills become pathological: writing a year of history one object at a time takes longer than fetching it did.</p>
+
+      <p>The fix is to <strong>batch by the natural grain of the source</strong>: a day of deployments, a day of pull requests for a repository, a channel's threads for a day. Then generalize the batching mechanism once, so every new source inherits it rather than reinventing it. The key layout matters too &mdash; <code>org/repo/yyyy/mm/dd</code> rather than a flat namespace &mdash; because every reprocessing job you will ever write is scoped by time, entity, or both, and the prefix is the only index object storage gives you.</p>
+
+      <h3>Concurrency: a lock table, and a watchdog for the lock table</h3>
+
+      <p>Multiple writers &mdash; a live worker and a backfill job, two backfills for adjacent ranges &mdash; can target the same repository's prefix at the same time and interleave into a mess. We serialized writes per repository with a lock row in a relational database.</p>
+
+      <p>And then, inevitably, the second half: <strong>a watchdog that clears stale locks</strong>. A process that dies holding a lock blocks that repository forever, and "forever" in a data pipeline means "until someone notices the numbers stopped moving", which can be a week. Any lock held by a process that can crash needs an owner, a timestamp, and something that reaps it. If you build the lock and not the reaper, you have converted a data race into an outage with a longer time to detection.</p>
+
+      <h3>Idempotency is the whole game</h3>
+
+      <p>Every job in this platform runs more than once over the same data &mdash; by retry, by backfill, by reprocessing after a model fix. Four mechanisms did the work:</p>
+
+      <table>
+        <thead>
+          <tr><th>Mechanism</th><th>Problem it solves</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Record hash</strong> stored with the row</td><td>A generic "update everything that changed" job can skip rows whose content is identical, which makes full-fleet re-syncs cheap</td></tr>
+          <tr><td><strong>Unique index on the natural key</strong> (org, repo, number)</td><td>Duplicate inserts fail loudly instead of silently doubling somebody's metrics</td></tr>
+          <tr><td><strong>Deduplication jobs</strong> per entity</td><td>Cleans up what got in before the constraint existed &mdash; and something always did</td></tr>
+          <tr><td><strong>Surrogate keys</strong> instead of provider identifiers</td><td>When a repository is migrated between source-control instances its provider id changes; a surrogate key keeps history continuous</td></tr>
+        </tbody>
+      </table>
+
+      <p>That last one deserves emphasis because it looks like pedantry until it isn't. We keyed some entities on the provider's identifiers, and then the company migrated to a different source-control instance. Identifiers changed. History fractured, and the repair involved not just a schema change but a series of careful model changes downstream to stitch two eras together. <strong>Any identifier owned by a third party is a foreign key into someone else's roadmap.</strong></p>
+
+      <h3>Reconciliation: assume the pipeline is lying</h3>
+
+      <p>We ran scheduled checks comparing the operational database with the warehouse, per entity, per day, and alerted on divergence. This is the single highest-value job in any ETL platform and it is almost always the last one built, because it produces no features &mdash; it only tells you your features are wrong.</p>
+
+      <p>Alongside it, backfills became a first-class concept rather than a script somebody ran once: a job type with a date range, a concurrency setting, checkpointing and a dry run. We had backfills for missing records, for corrected metadata, for a new column, for a bug in a converter. Treating them as infrastructure instead of incidents is what makes a data model safe to change.</p>
+
+      <h3>Making it fast: what worked and what didn't</h3>
+
+      <p>Three rounds of performance work, with an honest score.</p>
+
+      <p><strong>Parallelism with a configurable ceiling &mdash; worked.</strong> Per-repository processing, per-record updates, object storage writes and summary backfills all became parallel with a concurrency knob. The knob is the important half: the right concurrency is a function of the source's rate limits and the warehouse's tolerance, and both change.</p>
+
+      <p><strong>Virtual threads &mdash; partially reverted.</strong> We upgraded jobs to a runtime with virtual threads and converted the I/O-heavy paths. Some of it was a clear win. Some of it we rolled back after finding problems, and the lasting fix was to keep an explicit semaphore around the work rather than assume cheap threads mean unbounded concurrency is fine. Virtual threads remove the cost of a blocked thread; they do not remove the downstream service's opinion about how many concurrent requests it wants.</p>
+
+      <p><strong>Distributed batch processing &mdash; worked, once the framework fit.</strong> Some jobs simply do not fit on one machine: reprocessing every file of every pull request in the company's history, for instance. Those moved onto a MapReduce-style distributed framework. The lesson was less about the framework and more about the threshold: single-machine jobs with a concurrency knob get you remarkably far, and the moment to move is when the job's runtime stops fitting in the window between two runs of itself.</p>
+
+      <p>Two smaller ones that paid off immediately: giving the platform its own warehouse compute rather than sharing a busy one, and replacing plain caches in the read path with an <strong>asynchronous refreshing cache</strong> plus a pre-load at startup, so an expiring entry never makes a user wait for a slow query. Pre-loading took around twenty minutes to warm everything, which is fine when the alternative is a user watching a spinner.</p>
+
+      <h3>The modelling layer is where the domain lives</h3>
+
+      <p>The transformation layer &mdash; SQL models, version-controlled, tested, built on the warehouse &mdash; is where raw events become concepts: review cycle time, lead time, deployed changes, per-team rollups.</p>
+
+      <p>The hardest problems there were not SQL. They were identity and time:</p>
+
+      <ul>
+        <li><strong>Which team did this person belong to <em>at the time</em>?</strong> Attributing last quarter's work to this quarter's org chart produces numbers that are wrong in a way nobody can see. Temporal lookups against team-membership history are the fix, and they are a lot of work.</li>
+        <li><strong>Which team does this repository belong to when the author belongs to several?</strong> We resolved it through repository ownership rather than author membership, which is more stable and more defensible.</li>
+        <li><strong>Who is this, actually?</strong> Accounts get renamed and deleted; migrations leave suffixes on usernames; a deleted account's contributions appear under a placeholder. We stripped migration suffixes, mapped public accounts to internal identities, and attributed orphaned changes to the person with the most commits on them. Every one of those is a judgement call that belongs in a documented model, not in an application query where nobody will find it.</li>
+      </ul>
+
+      <div class="callout">
+        <div class="callout-label">The principle</div>
+        <p>In a metrics platform, the modelling layer <em>is</em> the product. The number a leader sees is not "the data" &mdash; it is the output of a dozen decisions about identity, time and attribution. Keeping those decisions in reviewed, tested, version-controlled models is the only way the answer to "why is this number what it is" stays answerable.</p>
+      </div>
+
+      <hr>
+
+      <h2>Part 2 &mdash; From Charts to Narratives</h2>
+
+      <p>The charts worked. Teams saw things about themselves they could not see before. And still, the most common feedback was a variant of: <em>fine, but what does it mean?</em> A chart of review latency does not tell a manager that an engineer spent the quarter unblocking three other teams through a migration nobody scheduled.</p>
+
+      <p>So we asked a different question: instead of only <em>showing</em> engineering activity, could we <em>describe</em> it &mdash; in prose, faithful to the data? It started as a hackathon pitch, it won, and then came the part that decides whether an idea is real: putting it into production for everyone.</p>
+
+      <p>What follows is the short version. The engineering of those agents &mdash; paginated tools instead of stuffed context, an evaluation harness with an LLM judge scoring citations, automated prompt evolution, and per-step model economics &mdash; has <a href="agents-that-summarize-work.html">its own post</a>.</p>
+
+      <h3>Architecture: one agent per kind of contribution</h3>
+
+      <p>The naive version &mdash; "here is everything this person did, write a summary" &mdash; fails for boring reasons. Context windows, cost, and the fact that different contribution types need different reasoning. Reviewing forty pull requests is a different kind of contribution from authoring three, and both are different from a month of answering questions in a support channel.</p>
+
+      <p>So: <strong>a separate agent per contribution type</strong> &mdash; authored changes, reviews, issues, support threads &mdash; each with its own prompt and its own notion of what matters. Each one summarizes hierarchically:</p>
+
+      <ol>
+        <li>Fetch the person's contributions for the period from the warehouse.</li>
+        <li><strong>Group them by theme</strong> rather than by date &mdash; because the unit a human recognizes is "the migration", not "the fourteenth of March".</li>
+        <li>Summarize each theme from its own items.</li>
+        <li>Summarize the themes into the top-level narrative.</li>
+      </ol>
+
+      <p>That hierarchy is what makes the output readable. A flat list of forty changes summarized in one pass produces a list of forty changes with adjectives. Grouping first produces something that reads like a colleague describing the quarter.</p>
+
+      <p>The retry logic, counters and shared plumbing were factored out into common infrastructure early, once we had three agents. Model calls fail, rate-limit and occasionally return something unparseable; every agent needs the same handling, and three copies of it drift within a month.</p>
+
+      <h3>The synchronous version had to die</h3>
+
+      <p>The first implementation generated a summary inside the request that asked for it. That works in a demo and fails in production for a reason that has nothing to do with LLMs: <strong>the work takes longer than any reasonable request timeout</strong>, and doing it inline means a retry re-runs the whole expensive thing.</p>
+
+      <p>The production shape:</p>
+
+      <ul>
+        <li>A request creates a row in a <strong>summaries table</strong> in a pending state and returns immediately.</li>
+        <li>Generation is enqueued on the task queue, where retries, concurrency and backoff already exist.</li>
+        <li>A worker generates, then writes the result back to the row.</li>
+        <li>The client polls; the UI shows a pending state instead of a spinner that might be a dead request.</li>
+      </ul>
+
+      <p>This is an ordinary asynchronous job pattern, and that is the point. The novel part of an LLM feature is the prompt, not the plumbing &mdash; and teams reliably get this backwards, spending weeks on prompt engineering while the request-response shape quietly guarantees the feature cannot scale.</p>
+
+      <h3>Prompts as code, with rules</h3>
+
+      <p>Three decisions I would repeat.</p>
+
+      <p><strong>Prompts live in templates, not in string concatenation.</strong> Moving them into a template engine made them reviewable, diffable and editable without a code change in five places.</p>
+
+      <p><strong>Refer to people by username, never with pronouns.</strong> This started as a correctness rule &mdash; the model has no way to know anyone's pronouns, and guessing from a name is a coin flip that misgenders real colleagues &mdash; and it turned out to also make the prose better: it forced factual, attributable sentences rather than narrative flourish.</p>
+
+      <p><strong>Detail level is an input, not a personality.</strong> Different readers want different lengths, so verbosity is configurable and items are sorted by relevance before summarization, so a shorter summary is the <em>important</em> subset rather than an arbitrary truncation.</p>
+
+      <h3>Access control is a feature of the summary, not a wrapper around it</h3>
+
+      <p>The moment you generate prose about individuals, permissions stop being infrastructure and become product. Who can read a summary about a person? The person. Their manager. Their manager's manager? An admin doing support? What about an impersonation session for debugging &mdash; does the summary render, and is that logged?</p>
+
+      <p>We built team-level authorization, a permissions endpoint the frontend uses to decide what to even offer, restricted group visibility, explicit rules for subordinates, and impersonation for support with tests covering it end to end. The rule of thumb that emerged: <strong>every permission question must be answered at generation time and again at read time</strong>, because the org chart moves and a summary generated when someone was your report should not remain readable after they are not.</p>
+
+      <h3>The other agent: where did the engineering time go?</h3>
+
+      <p>A related agent estimated how engineering effort distributed across product features, combining calendar availability with contribution data, rolled up per team and reviewable by the people it described. Useful for planning and for the finance-adjacent question of what was built.</p>
+
+      <p>The design decision that made it defensible: <strong>the estimate is reviewable and editable by the team</strong>, not an authoritative output. An estimate a human can correct is a conversation starter. The same number presented as fact is a thing people learn to game or resent.</p>
+
+      <h3>The scar, restated because it is the most important part</h3>
+
+      <div class="callout">
+        <div class="callout-label">Scar</div>
+        <p>With the chart product, some managers started using our numbers in performance reviews. Nobody asked us; nothing in the product prevented it. We had shipped something powerful without deciding what it was <em>not</em> for &mdash; and declining to make that decision does not mean it goes unmade. It means your users make it for you.</p>
+        <p>Narratives raise the stakes. A chart is obviously partial; a fluent paragraph about a person reads as a judgement even when every sentence is sourced. That is why the constraints above are not decoration: username-only attribution, every claim traceable to a linked contribution, the subject able to read their own summary, permissions enforced at both generation and read time, estimates editable by the people they describe. The guard rails are the product.</p>
+      </div>
+
+      <p>What made it worth doing anyway: the summaries genuinely surfaced work that was invisible to metrics. Review work, unblocking other teams, the migration that shows up as no features shipped. Some of the most respected engineers in the company wrote to us unprompted to say the narratives described their work accurately &mdash; which is the only quality bar that matters for a system like this, because the failure mode is not "it is wrong", it is "it is plausible and wrong".</p>
+
+      <hr>
+
+      <h2>Key Takeaways</h2>
+
+      <ol>
+        <li><strong>Land raw records in object storage and treat the warehouse as derived.</strong> Reprocessing, schema changes and disputes all become tractable.</li>
+        <li><strong>Batch at the natural grain of the source.</strong> One file per record breaks ingestion and makes backfills pathological.</li>
+        <li><strong>The key prefix is your only index.</strong> Entity and date, in that order, because that is how every reprocessing job is scoped.</li>
+        <li><strong>If you build a lock, build the reaper.</strong> A lock held by a dead process converts a data race into a silent week-long outage.</li>
+        <li><strong>Idempotency by construction:</strong> record hashes, unique natural keys, dedup jobs, and surrogate keys instead of a third party's identifiers.</li>
+        <li><strong>Reconcile the warehouse against the source on a schedule.</strong> It is the highest-value job and always the last one built.</li>
+        <li><strong>Make backfills infrastructure, not incidents.</strong> Date range, concurrency, checkpoints, dry run.</li>
+        <li><strong>Concurrency needs a knob and a ceiling</strong> &mdash; virtual threads remove the cost of blocking, not the downstream service's limits.</li>
+        <li><strong>Move to distributed batch when a job stops fitting between two runs of itself</strong>, not before.</li>
+        <li><strong>In a metrics platform, the modelling layer is the product.</strong> Identity and time decisions belong in reviewed models, not in application queries.</li>
+        <li><strong>Attribute to the team someone was on at the time.</strong> Anything else is wrong in a way nobody can see.</li>
+        <li><strong>One agent per contribution type, summarizing hierarchically by theme.</strong> Flat summarization produces a list with adjectives.</li>
+        <li><strong>LLM features are asynchronous jobs.</strong> Pending row, queue, worker, poll. The plumbing is where scaling is won or lost.</li>
+        <li><strong>Prompts are code:</strong> templated, reviewed, with explicit rules &mdash; usernames not pronouns, configurable detail, relevance-sorted input.</li>
+        <li><strong>Enforce permissions at generation time and at read time.</strong> The org chart moves after the text is written.</li>
+        <li><strong>Decide what your product is not for, and build that decision in.</strong> Otherwise your users decide it for you, in a performance review.</li>
+      </ol>
+    </article>
+  </main>
+
+  <footer id="footer-slot"></footer>
+
+  <script src="../js/site.js"></script>
+</body>
+</html>
