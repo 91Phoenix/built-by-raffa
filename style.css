@@ -459,6 +459,14 @@ article figure .diagram-scroll {
   padding: 0.75rem;
 }
 
+article figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
 article figure .diagram {
   width: 100%;
   min-width: 560px;

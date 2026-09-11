@@ -18,7 +18,7 @@
         <div class="post-meta">
           <span>September 2026</span>
           <span class="dot">&middot;</span>
-          <span>19 min read</span>
+          <span>22 min read</span>
         </div>
       </div>
 
@@ -26,7 +26,9 @@
 
       <p>Foodia is a meal-planning platform: 841 Italian recipes and 891 ingredient encyclopedia entries in Postgres, a Django REST backend, a React frontend, and an LLM agent with eighteen tools that plans your week, tracks your pantry, reads your grocery receipt and tells you what it all costs. <a href="crawling-with-scrapy.html">The scraper that filled that database</a> was the subject of an earlier post. This one is about what got built on top, how it got built, and what I found when I pulled the repo onto a clean machine and actually looked at the numbers it produces.</p>
 
-      <p>Short version: the process worked. Thirty pull requests written, reviewed and fixed by an agent loop, merged by me. And the most expensive bug in the codebase &mdash; a paella priced at &euro;7,208 &mdash; sailed through all of it, because every layer of the process was checking whether the code did what the spec said, and the spec never said anything about what a pistil of saffron weighs.</p>
+      <p>One thing to be clear about before anything else, because it changes how you should read the rest: <strong>I have not read most of this code.</strong> Foodia is not a codebase I maintain. It is an experiment in running a software factory &mdash; writing the specification, the glossary, the standards and the tickets, then letting a loop of agents produce the implementation, review it, fix it and hand me a pull request. My job in that arrangement is the input side and the merge button. For long stretches, the only thing I read about a feature was the ticket I wrote and the PR description an agent wrote back.</p>
+
+      <p>That is the experiment, and it mostly worked: thirty pull requests written, reviewed and fixed by agents, merged by me. It also means the section near the end is not a retrospective. It is me reading my own repository for the first time, and finding a paella priced at &euro;7,208 &mdash; which sailed through every layer of the process, because each layer was checking whether the code did what the spec said, and the spec never said anything about what a pistil of saffron weighs.</p>
 
       <hr>
 
@@ -75,7 +77,9 @@ _Avoid_: leftovers (loaded term), meal prep</code></pre>
 
       <h2>Part 2 &mdash; The Loop</h2>
 
-      <p>The orchestrator is 140 lines of TypeScript in <code>.sandcastle/main.mts</code>, built on <code>@ai-hero/sandcastle</code> for sandbox and agent plumbing, with the phase logic written in house. It is a Ralph loop in the original sense: one prompt, one sandbox, run it again until there is nothing left to do. What is mine is the shape of the iteration &mdash; plan centrally, execute in parallel, review before a human ever looks.</p>
+      <p>A Ralph loop, in the original sense: one prompt, one sandbox, run it again until there is nothing left to do. The shape of the iteration is the part I care about &mdash; plan centrally, execute in parallel, review before a human ever looks &mdash; and it survived a change of runtime underneath it. The first version, which is the one still committed to the repo as <code>.sandcastle/main.mts</code>, was 140 lines of TypeScript on top of an off-the-shelf sandbox library; I tried it, kept the shape, and replaced the machinery with my own runner. The pull requests below came out of the replacement.</p>
+
+      <p>Because the prototype is what the repository contains, it is what I can quote, and the design it encodes is the design that shipped.</p>
 
       <figure>
         <div class="diagram-scroll">
@@ -146,26 +150,13 @@ waiting on other issues.</code></pre>
 
       <p>Bias toward blocked is the right default, and it took one painful afternoon of merge conflicts to believe it. Two agents adding a field to the same model produce two migrations with the same parent, and resolving that costs more human attention than running the second issue in the next iteration would have. The branch name is pinned to <code>sandcastle/issue-{id}</code> precisely so that re-planning is idempotent: the same issue always resolves to the same branch, so a crashed iteration resumes instead of forking.</p>
 
-      <p>Output is a JSON object inside <code>&lt;plan&gt;</code> tags, parsed with a Zod schema. If the tag is absent the loop breaks rather than guessing &mdash; the one place in the whole system where I preferred a hard stop to a heuristic.</p>
+      <p>Output is a JSON object inside <code>&lt;plan&gt;</code> tags, parsed against a schema. If the tag is absent the loop breaks rather than guessing &mdash; the one place in the whole system where I preferred a hard stop to a heuristic.</p>
 
       <h3>Phase 2 and 3: implement, then review, per issue, in parallel</h3>
 
-      <pre><code>await Promise.allSettled(
-  issues.map(async (issue) =&gt; {
-    const sandbox = await sandcastle.createSandbox({
-      branch: issue.branch, sandbox: docker(), hooks,
-    });
-    const implement = await sandbox.run({
-      name: "implementer", maxIterations: 5,
-      idleTimeoutSeconds: IDLE_TIMEOUT,
-      promptFile: "./.sandcastle/implement-prompt.md",
-      promptArgs: { TASK_ID: issue.id, ISSUE_TITLE: issue.title, BRANCH: issue.branch },
-    });
-    if (implement.commits.length &gt; 0) { /* find PR number, run reviewer */ }
-  }),
-);</code></pre>
+      <p>Every unblocked issue gets its own container on its own branch, and inside it an implementer runs to completion before a reviewer looks at the result. Three properties of that fan-out earned their place, and they are the ones I carried from the prototype into my own runner.</p>
 
-      <p>Three details in there earned their place. <code>Promise.allSettled</code> rather than <code>Promise.all</code>: one agent hitting an unfixable test must not cancel the other four. <code>idleTimeoutSeconds: 300</code>: a stuck agent is the expensive failure mode, not a crashed one, and five minutes of silence is a reliable signal. And the <code>implement.commits.length &gt; 0</code> guard, which is how the loop distinguishes "did the work" from "read the issue, found it under-specified, stopped" &mdash; the implement prompt explicitly instructs the agent not to commit when blocked.</p>
+      <p><strong>Settle, do not race.</strong> One agent hitting an unfixable test must not cancel the other four, so the parallel section waits for every branch to finish or fail independently rather than aborting on the first rejection. <strong>Kill on silence, not on crash.</strong> A stuck agent is the expensive failure mode &mdash; a crashed one costs you nothing but a log line &mdash; and five minutes with no output is a reliable signal that a session is never coming back. <strong>Use commits as the completion test.</strong> An issue that produced no commit is not a failure; it is the agent reading an under-specified ticket and stopping, which the implement prompt explicitly tells it to do. Branching on "were there commits" is how the loop tells those apart without parsing prose, and only branches with commits go on to be reviewed.</p>
 
       <p>The implementer's contract is strict TDD (write the failing test first, per sub-step), then the full local suite, then <code>ruff</code>, then a frontend build, then a PR whose body must contain a manual test plan for a human, then poll CI until green. The reviewer then inspects the diff for correctness, test coverage, security, Django-specific traps (missing migrations, N+1 queries) and style, posts a review comment <em>whether or not</em> it found anything, fixes what it found, pushes, waits for CI and re-reviews until clean. It is required to name its own model in the comment, which is how I can tell a bad review from a bad reviewer:</p>
 
@@ -180,7 +171,7 @@ waiting on other issues.</code></pre>
 
       <div class="callout">
         <div class="callout-label">Scar</div>
-        <p>The loop's own configuration took nine commits in one day to stabilise, and none of them were about prompts: <code>use explicit sudo, not sandcastle's sudo prefix</code>, <code>chain dependent hooks to avoid parallel race</code>, <code>stabilize planner hooks, fix virtiofs mounts, bake pip deps</code>, <code>rebuild image with PostgreSQL server</code>, <code>add build-image.sh with host UID/GID auto-detection</code>. An agent harness is not a prompt with a wrapper. It is a build of a Linux image with a database server, a compiled <code>pgvector</code>, a GitHub CLI and a UID that matches the host's so the mounted workspace is writable. Budget for that as infrastructure, because that is what it is.</p>
+        <p>The harness under the first version took nine commits in one day to stabilise, and none of them were about prompts: <code>use explicit sudo, not sandcastle's sudo prefix</code>, <code>chain dependent hooks to avoid parallel race</code>, <code>stabilize planner hooks, fix virtiofs mounts, bake pip deps</code>, <code>rebuild image with PostgreSQL server</code>, <code>add build-image.sh with host UID/GID auto-detection</code>. An agent harness is not a prompt with a wrapper. It is a build of a Linux image with a database server, a compiled <code>pgvector</code>, a GitHub CLI and a UID that matches the host's so the mounted workspace is writable. Budget for that as infrastructure, because that is what it is.</p>
       </div>
 
       <p>One nice consequence of doing it properly: each sandbox boots Postgres, creates the <code>vector</code> extension, runs <code>migrate</code>, and loads the committed <code>dump.json</code> fixture before the agent starts. Every agent gets 841 real recipes to test against, isolated from every other agent. That hook is four lines of shell and it is the difference between tests that pass and tests that mean something.</p>
@@ -263,7 +254,9 @@ ingredienti_structured: [{"name": "Biscotti secchi integrali", "unit": "g", "qua
 
       <h2>Part 4 &mdash; What Neither the Spec Nor the Loop Caught</h2>
 
-      <p>Everything above is the part I would put in a talk. Here is the part I found by cloning the repo onto a clean machine, seeding the database and querying it, which is the only activity in this entire post that found a single real bug.</p>
+      <p>Everything above is the part I would put in a talk: the specification, the loop, the features the two of them produced. Here is what happened when I finally cloned the repo onto a clean machine, seeded the database, started the app and looked at what it says.</p>
+
+      <p>This is the honest accounting of the experiment. Thirty agent-written pull requests, 703 tests, a glossary, an ADR trail and a reviewer that catches message leaks &mdash; and every single defect below was found in the first afternoon that a human ran the thing and read the output. Not one of them needed me to read the implementation, which is just as well, because I still have not.</p>
 
       <h3>1. The ingredient namespace is scraped text wearing a table</h3>
 
@@ -436,9 +429,36 @@ FAILED (failures=1)</code></pre>
 
       <hr>
 
-      <h2>Part 5 &mdash; Getting It Running, and the Bit That Cannot Be Recovered</h2>
+      <h2>Part 5 &mdash; Fixing It, and What It Looks Like Now</h2>
 
-      <p>The repo commits a 5.5 MB <code>dump.json</code> so you do not have to re-crawl or pay for LLM enrichment, and <code>docs/restore.md</code> documents the procedure. The documented procedure does not work. Both paths fail, for opposite reasons:</p>
+      <p>All of the above is fixed, in one branch, which is open as a pull request I have not merged. That is deliberate: the same rule the loop follows applies to me.</p>
+
+      <p>Two of the fixes were small. The rotten test's fixtures became relative to the clock. The spending window now runs to the last planned date instead of to today, so the estimate covers the plan rather than the one day of it that has already happened. Breakfast candidacy moved from title keywords to the recipe's category, because the keyword list could not be saved: with <code>'torta'</code> admitting quiches, my first patch added an exclusion list, and the planner promptly served <em>Panelle</em> &mdash; fried chickpea fritters &mdash; on the strength of <code>'pane'</code>. Sweet categories, 221 recipes, title words only allowed to rule a recipe <em>out</em>.</p>
+
+      <p>The data and cost fixes are the substantial ones, and they are three layers of the same problem:</p>
+
+      <ol>
+        <li><strong>Canonicalise the names at ingest.</strong> A new module reduces a scraped line to the ingredient itself, and a management command rewrites and merges the rows that already exist, moving pantry entries, price overrides and receipt items onto the survivor. <strong>2,029 ingredients became 1,093</strong>, and 891 encyclopedia entries became 849. Flour grades survive &mdash; <code>Farina 00 200 g</code> becomes <code>Farina 00</code>, not <code>Farina</code> &mdash; and real descriptors like <code>Acqua minerale ghiacciata</code> survive too, because the price lookup no longer needs them gone.</li>
+        <li><strong>Match on the head noun, not on a substring.</strong> A catalogue name applies only if it is the ingredient's opening words, longest prefix first, ties broken alphabetically. <code>zafferano</code> still prices <code>Zafferano in pistilli</code>; it no longer prices a risotto that merely mentions saffron, <code>mela</code> cannot reach <code>melanzane</code>, and no price depends on dict iteration order any more.</li>
+        <li><strong>Refuse to guess a weight you cannot afford to guess.</strong> Above &euro;200/kg a generic unit gets no cost at all &mdash; the ingredient is reported with an explicit "unit weight unknown" instead of a number. Pistils got a real weight, <code>bustina</code> joined the generic units, and a bare count above 50 is read as grams, because <code>"Gamberi 300"</code> is 300 grams of prawns and not 300 prawns.</li>
+      </ol>
+
+      <p>The paella that cost &euro;7,208 now costs &euro;7. Across all 841 recipes, <strong>nothing exceeds &euro;50 per serving</strong> &mdash; the worst is &euro;16, the median is &euro;1.08. Fifty-two new tests pin each of these cases, one per failure above, and the suite is 755 green.</p>
+
+      <p>For the images there is no clean answer. <code>media/</code> is gitignored and <code>image_url</code> is empty on every shipped row, and the source site's <code>robots.txt</code> disallows AI crawlers outright, so re-crawling is the operator's call and not something an agent should do on his behalf. What the branch does instead is stop the loss for next time &mdash; the loader now carries <code>image_url</code> through &mdash; and draw an honest placeholder per recipe: a flat colour, the dish name, the category, and the words <em>immagine non disponibile</em>. Nothing pretending to be a photograph.</p>
+
+      <p>Which is what the walkthrough below shows, on the fixed branch: search, a recipe with a per-ingredient cost breakdown, the weekly plan, and the spending dashboard.</p>
+
+      <figure>
+        <img src="../img/posts/foodia-walkthrough.gif" alt="Screen recording of Foodia: searching recipes, opening a recipe with per-ingredient costs, the weekly meal plan, and the spending dashboard" loading="lazy">
+        <figcaption>Left to right: 841 recipes with placeholder tiles and per-recipe cost badges; <em>Torta di mele</em> at &euro;3.26 of apples, &euro;0.38 of flour, &euro;0.80 of eggs; the week's plan with sweet breakfasts and a missing-ingredient count per meal; and &euro;68.00 estimated for the plan, a number that was &euro;14.00 an hour earlier.</figcaption>
+      </figure>
+
+      <hr>
+
+      <h2>Part 6 &mdash; Getting It Running, and the Bit That Cannot Be Recovered</h2>
+
+      <p>The repo commits a 5.5 MB <code>dump.json</code> so you do not have to re-crawl or pay for LLM enrichment, and <code>docs/restore.md</code> documents the procedure. On <code>main</code>, the documented procedure does not work. Both paths fail, for opposite reasons:</p>
 
       <pre><code>$ python manage.py load_recipes dump.json
 KeyError: 'title'
@@ -477,12 +497,18 @@ UserProfile.objects.all().delete()"
 .venv/bin/python manage.py sqlsequencereset auth recipes > /tmp/seq.sql
 docker compose exec -T db psql -q -U foodai -d foodai < /tmp/seq.sql
 
-# 6. Knowledge base, no API key required
-.venv/bin/python manage.py generate_llm_wiki</code></pre>
+# 6. Merge the duplicate ingredient rows
+.venv/bin/python manage.py canonicalize_ingredients
 
-      <p>That yields 841 recipes with calories and structured ingredients, 891 encyclopedia entries with prices, 2,029 ingredient rows, and a 1,761-file wiki. Skip step 5 and the first user you create dies on <code>duplicate key value violates unique constraint "auth_user_pkey"</code>, which is a confusing error to meet ten minutes into a project.</p>
+# 7. Knowledge base, no API key required
+.venv/bin/python manage.py generate_llm_wiki
 
-      <p>What you cannot get back is the pictures. 743 of the 841 recipes reference a file under <code>media/recipes/</code>; <code>media/</code> is gitignored, so all 743 are missing on a fresh clone, and <code>image_url</code> is empty on <strong>all 841 rows</strong> &mdash; the scraper downloaded the images and never kept the URL it fetched them from. So <code>download_images</code> has nothing to download from, and the only recovery path is re-scraping the source site for URLs the database used to know. <code>restore.md</code> admits this in a "Known limitations" section, which is the correct place to admit it and a worse place than a schema that had kept the URL.</p>
+# 8. Placeholder tiles, since media/ is not in the repo
+.venv/bin/python manage.py generate_placeholder_images</code></pre>
+
+      <p>That yields 841 recipes with calories and structured ingredients, 849 encyclopedia entries with prices, 1,093 ingredient rows, and a 1,761-file wiki. Skip step 5 and the first user you create dies on <code>duplicate key value violates unique constraint "auth_user_pkey"</code>, which is a confusing error to meet ten minutes into a project. Steps 6 and 8 are new; the whole sequence is now in <code>restore.md</code>, because a restore procedure nobody has executed is a wish, not a procedure.</p>
+
+      <p>What no amount of code fixes is the pictures. 743 of the 841 recipes reference a file under <code>media/recipes/</code>; <code>media/</code> is gitignored, so all 743 are missing on a fresh clone, and <code>image_url</code> is empty on <strong>all 841 rows</strong> &mdash; the scraper downloaded the images and never kept the URL it fetched them from. So <code>download_images</code> has nothing to download from, and the only recovery path is asking the source site again for URLs the database used to know. The loader now keeps the URL so the loss stops repeating, and the placeholders make the gap visible instead of broken, but the photographs themselves are a crawl I am not entitled to run casually: that site's <code>robots.txt</code> disallows <code>ClaudeBot</code>, <code>Claude-Web</code> and <code>anthropic-ai</code> outright. Its own <code>RecipeBot</code> is welcome, and that is the project owner's decision to make, not the agent's.</p>
 
       <hr>
 
@@ -501,6 +527,8 @@ docker compose exec -T db psql -q -U foodai -d foodai < /tmp/seq.sql
         <li><strong>Do not let a default masquerade as a measurement.</strong> Zero of 841 recipes have a real shelf life, yet every wiki file states one, and a typed query filters on it. Null forces a question; a plausible default answers it wrongly and confidently.</li>
         <li><strong>Never hardcode a date in a test that hits a relative window.</strong> 703 tests, one failure, green on the day it merged and rotten since 1 July. Agent review checks the diff against the ticket, and CI checks today &mdash; neither can see a fuse.</li>
         <li><strong>Spec-driven process makes the code match the spec; it cannot make the spec match the world.</strong> Thirty reviewed pull requests, 703 tests and a glossary, and the thing that found a &euro;4,500 plate of fried rice was running the app and reading the output.</li>
+        <li><strong>A software factory still needs someone to open the box.</strong> Not to read the diff &mdash; I never did &mdash; but to use the product and check its numbers against reality. Every defect here was visible in one afternoon of clicking, and invisible to every layer that only ever compared code against a ticket. Whatever you automate, keep that afternoon.</li>
+        <li><strong>Fix the layer the bug lives in, not the symptom above it.</strong> The savoury-quiche breakfast tempted me into an exclusion list, and the exclusion list immediately served fried chickpea fritters because <code>'pane'</code> is inside <code>"Panelle"</code>. The fix was to stop asking the title and start asking the category. If your patch is another keyword, you are still playing the game that produced the bug.</li>
       </ol>
     </article>
   </main>
