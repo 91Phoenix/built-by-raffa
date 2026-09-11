@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Build Container Is Your Softest Target: Locking Down CI Without Breaking It &mdash; Bradicode</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <nav id="nav-slot"></nav>
+
+  <main>
+    <a href="index.html" class="back-link">&larr; All posts</a>
+
+    <article>
+      <div class="post-header">
+        <h1>The Build Container Is Your Softest Target: Locking Down CI Without Breaking It</h1>
+        <div class="post-meta">
+          <span>September 2026</span>
+          <span class="dot">&middot;</span>
+          <span>17 min read</span>
+        </div>
+      </div>
+
+      <p>A build container runs arbitrary code, written by anyone with commit access, with credentials attached, on your network. That is not a vulnerability &mdash; that is the product. CI exists to execute the code people write. Every hardening decision has to start from accepting that and asking a narrower question: <em>what can that code reach, and what can it take with it?</em></p>
+
+      <p>This post covers the hardening work we did on an in-house CI platform: network lockdown of build containers, secrets that builds can use without the build being trusted, catching typosquatted dependencies at the moment the build system learns about them, and the source-control integration surface around all of it. Anonymized &mdash; no employer, no internal service names; the third-party technologies named are public ones anybody can use. Every control here is defensive and generic.</p>
+
+      <hr>
+
+      <h2>The Threat Model, Stated Plainly</h2>
+
+      <p>Four things a build container can do that you probably do not want:</p>
+
+      <table>
+        <thead>
+          <tr><th>Capability</th><th>Concrete abuse</th><th>Control</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Arbitrary outbound network</td><td>Exfiltrate source or secrets to any host; pull a payload from anywhere</td><td>Default-deny egress with an allowlist computed per build</td></tr>
+          <tr><td>Ambient credentials</td><td>A build for repo A uses a token that grants access to repo B's secrets</td><td>Secret access gated on the identity of the repository being built</td></tr>
+          <tr><td>Arbitrary dependencies</td><td>A typosquatted package name pulls hostile code into the artifact</td><td>Validate the resolved dependency set where the system already parses it</td></tr>
+          <tr><td>Privileged execution</td><td>Escape the container, tamper with the host or the daemon</td><td>Remove privileged commands; unprivileged nested containers; mediate the residue through a policy layer</td></tr>
+        </tbody>
+      </table>
+
+      <p>Everything below is one of those four rows.</p>
+
+      <hr>
+
+      <h2>Control 1 &mdash; Default-Deny Egress, Computed Per Build</h2>
+
+      <p>The hardest part of restricting build network access is that builds legitimately need a lot of network. They pull dependencies from internal mirrors and public registries. They clone from source control. They upload artifacts to object storage. They call the build system's own APIs. Block too much and every build in the company fails; block too little and you have built a compliance checkbox.</p>
+
+      <p>The design we landed on separates <em>deciding</em> from <em>enforcing</em>:</p>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 290" role="img" aria-label="A network configuration service returns allowed subnets, domains and ports; the executor applies them as firewall rules before the build starts">
+          <defs>
+            <marker id="arr-net" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+            <marker id="arr-net-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+
+          <rect x="10" y="20" width="150" height="30" rx="6" class="d-box-soft"/>
+          <text x="85" y="40" text-anchor="middle" class="d-text-sm">cloud provider IP ranges</text>
+          <rect x="10" y="58" width="150" height="30" rx="6" class="d-box-soft"/>
+          <text x="85" y="78" text-anchor="middle" class="d-text-sm">source-control subnets</text>
+          <rect x="10" y="96" width="150" height="30" rx="6" class="d-box-soft"/>
+          <text x="85" y="116" text-anchor="middle" class="d-text-sm">internal mirrors &amp; registries</text>
+
+          <line x1="160" y1="35" x2="215" y2="70" class="d-line" marker-end="url(#arr-net)"/>
+          <line x1="160" y1="73" x2="215" y2="75" class="d-line" marker-end="url(#arr-net)"/>
+          <line x1="160" y1="111" x2="215" y2="82" class="d-line" marker-end="url(#arr-net)"/>
+
+          <rect x="215" y="52" width="170" height="60" rx="8" class="d-box-accent"/>
+          <text x="300" y="76" text-anchor="middle" class="d-text-inv">network config service</text>
+          <text x="300" y="94" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">subnets + domains + ports</text>
+
+          <text x="215" y="132" class="d-text-sm">refresh-after-write cache &middot; parallel DNS &middot; filtered by service and region</text>
+
+          <line x1="385" y1="82" x2="440" y2="82" class="d-line-accent" marker-end="url(#arr-net-a)"/>
+
+          <rect x="440" y="52" width="170" height="60" rx="8" class="d-box"/>
+          <text x="525" y="76" text-anchor="middle" class="d-text-b">executor</text>
+          <text x="525" y="94" text-anchor="middle" class="d-text-sm">applies firewall rules</text>
+
+          <line x1="525" y1="112" x2="525" y2="150" class="d-line-accent" marker-end="url(#arr-net-a)"/>
+
+          <rect x="410" y="150" width="230" height="80" rx="8" class="d-box-outline"/>
+          <text x="525" y="174" text-anchor="middle" class="d-text-b">build container</text>
+          <text x="525" y="194" text-anchor="middle" class="d-text-sm">default deny &rarr; allowlist only</text>
+          <text x="525" y="212" text-anchor="middle" class="d-mono">curl disallowed.example &rarr; blocked</text>
+
+          <text x="10" y="186" class="d-text-sm">Decision and enforcement are separate:</text>
+          <text x="10" y="204" class="d-text-sm">the service knows the policy and can be</text>
+          <text x="10" y="222" class="d-text-sm">updated centrally; the executor only</text>
+          <text x="10" y="240" class="d-text-sm">applies what it is handed, before the</text>
+          <text x="10" y="258" class="d-text-sm">first line of user code runs.</text>
+        </svg>
+        </div>
+        <figcaption>A service computes the allowlist from authoritative sources; the executor turns it into firewall rules before the build starts. Changing policy is a deploy of the service, not a rebuild of every image.</figcaption>
+      </figure>
+
+      <p>Details that made it workable:</p>
+
+      <ul>
+        <li><strong>Pull the ranges from the source of truth, filtered.</strong> Cloud provider IP ranges are published, and they are enormous. Filtering by service and region turns "all of the cloud" into a list with a defensible justification for each entry.</li>
+        <li><strong>Allow domains as well as subnets, and resolve them yourself.</strong> Some dependencies only exist behind names whose addresses move. That means DNS resolution in the path of every build launch &mdash; so resolve in parallel, and cache with a <em>refresh-after-write</em> policy rather than expire-after-write. The difference matters: refresh-after-write serves the slightly stale value while refreshing in the background, so a slow resolver never stalls a build launch.</li>
+        <li><strong>Ports are part of the policy.</strong> An allowlisted subnet on every port is a wider hole than people picture.</li>
+        <li><strong>Roll out in phases.</strong> A percentage, then repositories, then everything, with the ability to fall back instantly. A network control that fails closed has the same user experience as an outage.</li>
+      </ul>
+
+      <h3>Where it ended up: names instead of address ranges</h3>
+
+      <p>That first design is the one I described because it is the one you will build first, and it is worth understanding why it does not survive contact with time.</p>
+
+      <p>Enumerating IP ranges is a losing race. Cloud providers publish their ranges and then change them; a registry moves behind a different CDN; a service you allowlisted by address adds a region. The allowlist grows into thousands of CIDR blocks that nobody can review, nobody can justify entry by entry, and that are simultaneously <em>too broad</em> (an entire provider's range to reach one service) and <em>too narrow</em> (the one address that rotated last night and broke every build in the company).</p>
+
+      <p>So the policy moved up a layer. Instead of chasing addresses, it came to be expressed as:</p>
+
+      <ul>
+        <li><strong>Netmasks only where the target really is a network</strong> &mdash; internal subnets, the cluster, the artifact storage endpoints. These are stable, ours, and genuinely address-shaped.</li>
+        <li><strong>Names, including whole subdomain trees, for everything external.</strong> Allow the registry's domain and its subdomains rather than the addresses it happens to resolve to today. The policy then reads like the intent it encodes: <em>builds may reach this package registry</em>, not <em>builds may reach these 214 prefixes, reason unknown, added by someone in 2022</em>.</li>
+      </ul>
+
+      <p>The gains are mostly human. A name-based rule is reviewable &mdash; a person can look at an entry and say whether it should exist &mdash; and it stops churning every time a provider reshuffles its address space. Fewer emergency widenings means fewer permanent ones, because every allowlist entry added during an incident is an entry nobody removes.</p>
+
+      <p>The trade-off is that names are not enforced by the same mechanism as addresses. A packet filter matches addresses; matching a name means enforcing at a layer that can see it &mdash; a proxy in the path, DNS-level control, or SNI inspection &mdash; and pinning what your resolver is allowed to return so that a name cannot be pointed at somewhere it should not go. That is more moving parts than a firewall rule. It is also the only version of the control that a human can still audit two years later, which is what decides whether a control is real or merely deployed.</p>
+
+      <h3>The test is the control</h3>
+
+      <p>The part I would insist on anywhere: <strong>we tested the firewall rules for real, not mocked</strong>. The acceptance test for the executor actually applies the rules and verifies the effect. And a dedicated smoke-test build does the only end-to-end check that means anything &mdash; it tries to reach a domain that is not on the allowlist, and the test passes only if the attempt fails.</p>
+
+      <p>Mocking a security control tests that you called a function. The whole value of the control is what happens in the kernel afterwards.</p>
+
+      <div class="callout">
+        <div class="callout-label">The principle</div>
+        <p>If a control's enforcement is mocked in tests, the control is documentation. Network policy, permission checks and sandboxing must be verified by observing the blocked behaviour, in an environment shaped like production. Everything else is a unit test of your own optimism.</p>
+      </div>
+
+      <hr>
+
+      <h2>Control 2 &mdash; Secrets a Build Can Use Without Trusting the Build</h2>
+
+      <p>Builds need secrets: credentials to publish artifacts, tokens for integration tests, signing keys. The naive approach bakes them into the image or the executor environment, which means every build of every repository has every secret. One compromised or merely curious repository, and it is all gone.</p>
+
+      <p>What we did instead: a small step that runs before the build command and fetches secrets from the secret manager into the build's environment file &mdash; but <strong>only after asking the build system whether this repository is allowed to have this secret</strong>. The identity being authorized is the repository under build, not the container, not the user, not the image.</p>
+
+      <p>Three properties that fall out of that ordering:</p>
+
+      <ol>
+        <li>The secret lands in the build's environment, so the build never learns how to talk to the secret manager itself.</li>
+        <li>Authorization is centralized: the permission lives with the build system, which is the only component that knows what is being built and for whom.</li>
+        <li>Rotation is an operation on one store, not an image rebuild. We rotated shared artifact credentials more than once, and the pain was proportional to how many copies existed &mdash; which is the argument for having as few as possible.</li>
+      </ol>
+
+      <p>I would add one caveat learned the hard way: a secret written into a build's environment is available to everything the build runs, including its dependencies' build scripts. Scoping which secrets a repository may request is the only real boundary. "The build is trusted because the repo is ours" is not a boundary &mdash; it is the assumption every supply-chain incident starts from.</p>
+
+      <hr>
+
+      <h2>Control 3 &mdash; Catch Typosquats Where the Graph Is Already Parsed</h2>
+
+      <p>Dependency confusion and typosquatting attacks work because a package name that looks right is trusted by everyone downstream. The usual answer is a scanner somewhere in the pipeline. The better answer, if you own the build system, is to check at the point where the system <em>already</em> knows the full dependency set.</p>
+
+      <p>Our build system parsed every module's build configuration to discover modules and their dependencies &mdash; it has to, to schedule anything. That parse is the ideal integration point: after discovery, the dependency set goes to a validator service, and anything suspicious comes back as a <strong>build processing issue</strong> attached to the module.</p>
+
+      <p>Why that placement is the right one:</p>
+
+      <ul>
+        <li><strong>No new parsing.</strong> A separate scanner has to re-derive the dependency graph, and will disagree with the build system eventually. Disagreement between two parsers of the same file is a permanent source of false positives that trains people to ignore the tool.</li>
+        <li><strong>It reuses an existing feedback channel.</strong> Build processing issues were already a thing engineers saw and understood. A finding appears where they already look, without a new dashboard.</li>
+        <li><strong>The validator gets the whole fleet's data.</strong> A background job pushed module data from a read replica to the validator, so it can reason about what is normal across all repositories rather than judging one dependency list in isolation. Knowing that 900 modules use a package and one uses a name that differs by a character is exactly the signal that catches a typosquat.</li>
+      </ul>
+
+      <p>The detection itself was replaced more than once after I wrote the first integration &mdash; edit-distance heuristics give way to better signals, internal mirrors and namespace reservation close off whole categories, and the ecosystem's own tooling improves. That churn is the normal state of this control, and the wrong lesson to draw from it is that the specific check matters.</p>
+
+      <p>What mattered was that <strong>reducing supply-chain exposure stayed a standing effort rather than a project with an end date</strong>: a stable integration point in the build system where any new check can be plugged in, a feedback channel engineers already read, and someone whose job includes asking every few months what the current attack shape is. Dependency confusion, compromised maintainer accounts, malicious post-install scripts and poisoned build images are different attacks that arrive in waves; a platform that made room for the <em>next</em> check outlives any individual detector you write.</p>
+
+      <hr>
+
+      <h2>Control 4 &mdash; The Source-Control Integration Surface</h2>
+
+      <p>A build system's other soft edge is the integration with source control: webhooks arriving from outside, API tokens going out, and a lot of implicit trust in payloads.</p>
+
+      <p><strong>Do not build commits from organizations you do not recognize.</strong> This sounds absurd until you look at how webhook routing works in a large installation with public and internal instances. We started ignoring commits from unknown organizations outright, and added acceptance tests covering webhook security &mdash; because the test that the system <em>refuses</em> something is the one that regresses silently.</p>
+
+      <p><strong>Treat API rate limits as a capacity resource.</strong> Source-control API tokens have quotas, and a build system is an aggressive consumer. Two changes made the difference: distributing calls round-robin across several API identities, and making the worst-behaved background job dramatically less greedy &mdash; removing its multithreading, adding caching, and rate-limiting it. A job that finishes in twenty minutes instead of five, without starving interactive builds of quota, is the better job. We also alerted on token usage at elevated and critical thresholds, so exhaustion became a warning rather than a morning of unexplained failures.</p>
+
+      <p><strong>Detect provider maintenance and stop pretending.</strong> A health checker probed the source-control instances and marked them unhealthy when it detected maintenance responses. A maintenance mode then gated event processing &mdash; selectively, since an outage of the internal instance and an outage of the public one affect different builds. Afterwards, jobs cleaned up the build processing issues the outage had produced, because nothing erodes trust in a signal faster than stale errors from an incident that ended yesterday.</p>
+
+      <p>The through-line: <strong>external dependencies fail in ways your code will interpret as data.</strong> An HTML maintenance page parsed as an API response, a rate-limit error treated as "no results", an event from an organization you have never heard of. Every one of those is an input-validation problem wearing an infrastructure costume.</p>
+
+      <hr>
+
+      <h2>Control 5 &mdash; Remove the Privileges Nobody Needs, and Mediate the Ones They Do</h2>
+
+      <p>The least glamorous and most effective category: taking capabilities away.</p>
+
+      <p>The platform had supported privileged build commands &mdash; an escape hatch from an earlier era for builds that needed to do host-level things. We removed the references, then the feature, along with the tests that proved it worked. Similarly, a legacy build type that required a container daemon running in a mode incompatible with the newer sidecar arrangement was retired rather than accommodated.</p>
+
+      <p>Both removals were possible only because someone went and checked who was still using them. That is the actual work in deprecating a capability: not the delete, the census. And it is the work that gets skipped, which is why platforms accumulate escape hatches whose only remaining user is the incident that will exploit them.</p>
+
+      <h3>But builds do build containers</h3>
+
+      <p>The census never gets to zero, and the reason is structural: a large share of builds produce container images. Building an image inside a container is the nested-container problem, and the historical answer &mdash; run the build container privileged, or hand it the host's container socket &mdash; is not a sandbox at all. A build with the host socket can start a container mounting the host root filesystem. That is not an escape; it is the documented behaviour of the thing you gave it.</p>
+
+      <p>So the direction of travel was: <strong>make the inner daemon real, and make its privilege fake.</strong> The pieces the ecosystem now gives you, in rough order of how much they buy:</p>
+
+      <ul>
+        <li><strong>Nested containers without host privilege.</strong> Container runtimes exist specifically to make Docker-in-Docker work unprivileged &mdash; Sysbox is the best-known &mdash; by placing the workload in its own user namespace and emulating the parts of <code>procfs</code>/<code>sysfs</code> the inner daemon expects. Root inside the build is a namespaced root mapped to an unprivileged user outside it. The build can run its daemon and build its images; the identity it holds on the host is nobody.</li>
+        <li><strong>Rootless daemons and daemonless image builders</strong> for the cases that do not need a full inner Docker. If an image build is all you want, a builder that produces images without a privileged daemon at all removes the question rather than answering it.</li>
+        <li><strong>Kernel-level confinement underneath both</strong> &mdash; seccomp and mandatory-access-control profiles, dropped capabilities, no new privileges &mdash; so that even the namespaced root cannot reach for syscalls the build has no business making.</li>
+      </ul>
+
+      <p>Which leaves the residue: a small set of operations that genuinely require privilege and genuinely have to be allowed for specific builds. The answer there is not a per-build exception; it is a <strong>mediator</strong>. The daemon's API sits behind an authorization layer &mdash; Docker supports authorization plugins for exactly this, and in a Kubernetes-based fleet the equivalent is an admission controller with a policy engine &mdash; which sees every request and decides, against policy, whether <em>this</em> repository may perform <em>that</em> operation.</p>
+
+      <div class="callout">
+        <div class="callout-label">The shape that matters</div>
+        <p>Every privileged operation goes through a component whose only job is to say yes or no, with the policy written down somewhere reviewable, and every decision logged. The alternative &mdash; a flag on a build config that means "this one is allowed to do dangerous things" &mdash; is a policy too, but one that is scattered across thousands of repositories, has no audit trail, and only the person who added it knows why it is there.</p>
+      </div>
+
+      <p>The property I would hold onto if I had to keep one: <strong>a build that wants privilege must ask something that can refuse</strong>. Not a flag it sets itself, not a socket it was handed, not a capability it inherited. A request, to a mediator, against a written policy, recorded.</p>
+
+      <hr>
+
+      <h2>What I Would Do Differently</h2>
+
+      <p>Three things.</p>
+
+      <p><strong>Build the allowlist observability before the enforcement.</strong> We rolled out in phases, which was right, but the fastest way to size the blast radius would have been a logging-only mode that records what <em>would</em> have been blocked, across the whole fleet, for a week. Phased enforcement discovers the exceptions one angry team at a time; shadow mode discovers all of them at once and lets you fix them before anyone notices.</p>
+
+      <p><strong>Treat every allowlist entry as expiring.</strong> Entries get added during incidents and stay forever. An allowlist with a required justification and a review date is a slightly annoying process that prevents a permanently widening hole.</p>
+
+      <p><strong>Decide the secret-scoping model before you make secrets available at all.</strong> We got the authorization check right &mdash; permission verified against the repository being built &mdash; but the granularity question ("which secrets may this repo request, and who approves that") deserved to be answered first, because it is much harder to tighten a scope people already depend on than to widen one.</p>
+
+      <hr>
+
+      <h2>Key Takeaways</h2>
+
+      <ol>
+        <li><strong>Start from what the container can reach and take, not from a checklist.</strong> Network, credentials, dependencies, privileges &mdash; four rows, four controls.</li>
+        <li><strong>Separate policy from enforcement.</strong> A service computes the allowlist; the executor only applies it. Policy changes are a deploy, not a fleet-wide image rebuild.</li>
+        <li><strong>Allowlists need ports and names, not just subnets</strong> &mdash; and names mean DNS in the launch path, so resolve in parallel and refresh caches in the background.</li>
+        <li><strong>Chasing IP ranges is a losing race; express external policy as names and subdomain trees.</strong> Netmasks for the networks that are genuinely yours. A rule a human can still justify in two years is the only kind that stays real.</li>
+        <li><strong>Never mock a security control in its own test.</strong> Apply the real rules and assert the traffic is blocked.</li>
+        <li><strong>Authorize secrets against the identity being built,</strong> and hand the secret to the build rather than teaching the build to fetch it.</li>
+        <li><strong>Rotation cost is proportional to copies.</strong> Fewer copies is a security property and an operational one.</li>
+        <li><strong>Validate dependencies where they are already parsed.</strong> A second parser will disagree with the first, and disagreement trains people to ignore findings.</li>
+        <li><strong>Report findings through a channel engineers already read.</strong> A new dashboard is a new thing to ignore.</li>
+        <li><strong>Fleet-wide context is what catches a typosquat.</strong> One repository's dependency list in isolation tells you nothing.</li>
+        <li><strong>Build the integration point, not the detector.</strong> The specific check will be replaced; supply-chain work is a standing effort, and the platform's job is to make room for the next one.</li>
+        <li><strong>Reject input from unrecognized sources, and test the rejection.</strong> Refusals regress silently.</li>
+        <li><strong>Rate limits are capacity.</strong> Distribute identities, throttle the greedy background job, alert before exhaustion.</li>
+        <li><strong>External outages arrive as malformed data.</strong> Health-check providers, gate processing during maintenance, and clean up the errors afterwards.</li>
+        <li><strong>Deprecating a capability is a census, not a delete.</strong> The escape hatch nobody uses is the one that gets used against you.</li>
+        <li><strong>Nested container builds do not need host privilege.</strong> A user-namespaced runtime built for unprivileged Docker-in-Docker, or a daemonless image builder, plus seccomp and capability confinement underneath.</li>
+        <li><strong>A build that wants privilege must ask something that can refuse.</strong> Route the residue through an authorization plugin or admission policy &mdash; written policy, per repository, every decision logged &mdash; never a flag the build sets on itself.</li>
+        <li><strong>Run new controls in shadow mode first.</strong> Discover every exception in a week, instead of one angry team at a time.</li>
+      </ol>
+    </article>
+  </main>
+
+  <footer id="footer-slot"></footer>
+
+  <script src="../js/site.js"></script>
+</body>
+</html>

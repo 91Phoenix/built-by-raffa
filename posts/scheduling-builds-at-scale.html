@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Don't Build What Didn't Change: Scheduling a Build System Past 400,000 Builds a Month &mdash; Bradicode</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <nav id="nav-slot"></nav>
+
+  <main>
+    <a href="index.html" class="back-link">&larr; All posts</a>
+
+    <article>
+      <div class="post-header">
+        <h1>Don't Build What Didn't Change: Scheduling a Build System Past 400,000 Builds a Month</h1>
+        <div class="post-meta">
+          <span>September 2026</span>
+          <span class="dot">&middot;</span>
+          <span>20 min read</span>
+        </div>
+      </div>
+
+      <p>For two and a half years I worked on an in-house CI system: thousands of repositories, tens of thousands of buildable modules, a dependency graph that crossed repository boundaries, and a build volume that went from roughly 80,000 builds a month to over 400,000 while I was there. I ended up tech lead of the team that owned it.</p>
+
+      <p>The interesting problem in a system like that is not "how do I run a build". Running a build is a container and a command. The interesting problem is <strong>deciding what to build, in what order, and &mdash; far more valuable &mdash; what not to build at all</strong>, while the answer keeps changing underneath you because people keep pushing commits.</p>
+
+      <p>This post is about the scheduling side of that system: the model, the optimization that removed the most work, the race conditions that model created, and the things I got wrong. I have anonymized it &mdash; no company, no service names, no links. The mechanics are what matter, and they generalize to any CI system that outgrew its original assumptions.</p>
+
+      <hr>
+
+      <h2>The Model: Repo, Branch, Module, and the Graph Between Them</h2>
+
+      <p>Four entities carry the whole design.</p>
+
+      <table>
+        <thead>
+          <tr><th>Entity</th><th>What it is</th><th>Why it exists separately</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Branch</strong></td><td>A repository branch the system tracks</td><td>Build state is per branch, not per repo</td></tr>
+          <tr><td><strong>Module</strong></td><td>One buildable unit inside a branch &mdash; a Maven module, a frontend package, a Docker image</td><td>A repo with 40 modules should not rebuild 40 things because one changed</td></tr>
+          <tr><td><strong>Repo build</strong></td><td>One triggered run over a branch: discover modules, then build the affected ones</td><td>It is the unit a human recognizes</td></tr>
+          <tr><td><strong>Inter-project build</strong></td><td>The transitive closure of downstream modules in <em>other</em> repositories that depend on what was just built</td><td>This is the part that makes it a distributed scheduling problem instead of a queue</td></tr>
+        </tbody>
+      </table>
+
+      <p>The last one is the whole game. In a company with thousands of repositories and a shared artifact tree, a merge to a widely-used library is not one build. It is a wavefront: the library builds, then everything that depends on it builds, then everything that depends on <em>those</em> builds, level by level, until the graph is exhausted. A single commit to a parent POM could schedule thousands of module builds.</p>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 350" role="img" aria-label="Push event flowing through queue, scheduler, module discovery, module builds on executors, and the downstream inter-project wavefront">
+          <defs>
+            <marker id="arr-sched" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+            <marker id="arr-sched-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+
+          <rect x="10" y="30" width="110" height="44" rx="8" class="d-box"/>
+          <text x="65" y="50" text-anchor="middle" class="d-text-b">push event</text>
+          <text x="65" y="66" text-anchor="middle" class="d-text-sm">webhook</text>
+
+          <line x1="120" y1="52" x2="160" y2="52" class="d-line" marker-end="url(#arr-sched)"/>
+
+          <rect x="160" y="30" width="110" height="44" rx="8" class="d-box-soft"/>
+          <text x="215" y="50" text-anchor="middle" class="d-text-b">event queue</text>
+          <text x="215" y="66" text-anchor="middle" class="d-text-sm">lightened payload</text>
+
+          <line x1="270" y1="52" x2="310" y2="52" class="d-line" marker-end="url(#arr-sched)"/>
+
+          <rect x="310" y="30" width="130" height="44" rx="8" class="d-box-accent"/>
+          <text x="375" y="50" text-anchor="middle" class="d-text-inv">scheduler</text>
+          <text x="375" y="66" text-anchor="middle" class="d-text-inv" style="font-weight:400;font-size:10.5px">consolidate &amp; enqueue</text>
+
+          <line x1="440" y1="52" x2="480" y2="52" class="d-line" marker-end="url(#arr-sched)"/>
+
+          <rect x="480" y="30" width="130" height="44" rx="8" class="d-box"/>
+          <text x="545" y="50" text-anchor="middle" class="d-text-b">module discovery</text>
+          <text x="545" y="66" text-anchor="middle" class="d-text-sm">parse configs &amp; POMs</text>
+
+          <line x1="375" y1="74" x2="375" y2="108" class="d-line" marker-end="url(#arr-sched)"/>
+
+          <rect x="255" y="108" width="240" height="46" rx="8" class="d-box-soft"/>
+          <text x="375" y="128" text-anchor="middle" class="d-text-b">module builds &mdash; one pod each</text>
+          <text x="375" y="144" text-anchor="middle" class="d-text-sm">Java &middot; frontend &middot; Docker &middot; Android &middot; iOS</text>
+
+          <line x1="375" y1="154" x2="375" y2="188" class="d-line-accent" marker-end="url(#arr-sched-a)"/>
+          <text x="385" y="176" class="d-text-accent">finished &rarr; who depends on this?</text>
+
+          <rect x="180" y="188" width="390" height="130" rx="8" class="d-box"/>
+          <text x="375" y="208" text-anchor="middle" class="d-text-b">inter-project build &mdash; the wavefront</text>
+
+          <rect x="205" y="224" width="90" height="30" rx="5" class="d-box-soft"/>
+          <text x="250" y="243" text-anchor="middle" class="d-mono">lib (repo A)</text>
+          <line x1="295" y1="239" x2="335" y2="239" class="d-line" marker-end="url(#arr-sched)"/>
+          <rect x="335" y="224" width="90" height="30" rx="5" class="d-box-soft"/>
+          <text x="380" y="243" text-anchor="middle" class="d-mono">svc (repo B)</text>
+          <line x1="425" y1="239" x2="465" y2="239" class="d-line" marker-end="url(#arr-sched)"/>
+          <rect x="465" y="224" width="90" height="30" rx="5" class="d-box-soft"/>
+          <text x="510" y="243" text-anchor="middle" class="d-mono">app (repo C)</text>
+
+          <text x="205" y="278" class="d-text-sm">one row per (inter-project build, downstream module): the mapping table</text>
+          <text x="205" y="296" class="d-text-sm">the graph is topologically sorted once, then walked as builds finish</text>
+          <text x="205" y="310" class="d-text-sm">terminal states propagate: a failure cancels what it makes unreachable</text>
+        </svg>
+        </div>
+        <figcaption>The scheduler's real job is the bottom box. Everything above it is bookkeeping for the wavefront: which downstream modules exist, which are reachable, which are still pending, and when the whole thing is done.</figcaption>
+      </figure>
+
+      <p>Each inter-project build stores a <strong>mapping row per downstream module</strong> and a topological sort of the graph. As module builds finish, the scheduler walks the sort, launches what is now unblocked, and marks the inter-project build complete when every mapping reaches a terminal state. That data structure is the reason for most of what follows &mdash; the optimizations, the watchdog, and the bugs.</p>
+
+      <hr>
+
+      <h2>Why the Wavefront Exists: Everything Is a Snapshot</h2>
+
+      <p>None of the above makes sense without the strategy underneath it, which I should have stated first: <strong>every module published a snapshot on every build, and consumers depended on the latest snapshot rather than on a pinned release.</strong></p>
+
+      <p>There is no dependency-upgrade ritual in that world. Nobody opens a pull request bumping a library from 4.2.1 to 4.3.0, nobody maintains a renovation bot, nobody discovers at release time that the version they pinned eleven months ago has a known vulnerability. Downstream always has the newest upstream, by construction.</p>
+
+      <p>The price is that a library change is <em>immediately</em> everyone's problem. Pinning is a buffer: it lets a breaking change sit harmlessly in a registry until each consumer chooses to walk into it, one team at a time, usually months later, when the author has forgotten the context and the person doing the upgrade has none. Remove the buffer and the failure surfaces at once &mdash; which is better, but only if somebody actually runs the downstream tests.</p>
+
+      <p><strong>That is what inter-project builds are for.</strong> They are not a scheduling nicety and not an optimization. They are the mechanism that makes unpinned snapshots safe:</p>
+
+      <ul>
+        <li>A merge to a library <strong>propagates immediately</strong> into every module that depends on it, transitively, level by level.</li>
+        <li>Each of those modules <strong>runs its own tests against the new artifact</strong> within minutes, not at some future upgrade.</li>
+        <li>The result comes back <em>to the author of the change</em>, while they still have the change in their head. The person who broke a downstream consumer learns it from their own merge, not from that team's sprint three months later.</li>
+        <li>Production ends up running the freshest version of everything, so a fix &mdash; a bug, a security patch, a performance regression &mdash; reaches every consumer as fast as the graph can be walked, with no migration campaign and no coordination meeting.</li>
+      </ul>
+
+      <blockquote>Continuous integration, taken literally: integration happens continuously, against the tip of everything, instead of being deferred to whenever each consumer feels like it. The build volume is what that costs.</blockquote>
+
+      <p>That last sentence reframes the whole system. Four hundred thousand builds a month is not a symptom of inefficiency &mdash; a large part of it is the deliberate price of never having a stale dependency anywhere in the company. Which means the scheduling work has two jobs that pull against each other:</p>
+
+      <table>
+        <thead>
+          <tr><th>Goal</th><th>Why it matters here</th><th>What it pushes you toward</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Propagate fast</strong></td><td>Freshness and fast feedback are the entire point; a wavefront that takes hours is a buffer reintroduced by accident</td><td>Aggressive scheduling, pre-provisioned capacity, low queue latency</td></tr>
+          <tr><td><strong>Do not build what cannot have changed</strong></td><td>The graph is transitive and wide; naive propagation rebuilds half the company for a comment fix</td><td>Provable skips, consolidation, change-based graph construction</td></tr>
+        </tbody>
+      </table>
+
+      <p>Every decision in the rest of this post sits somewhere on that line. And it explains a distinction that is otherwise easy to miss in what follows: the skip optimization applies to <strong>branch builds</strong>, where an upstream module can be proven identical to what the default branch already published. On the default branch itself, propagation <em>is</em> the product. You do not skip a downstream build there to save capacity, because the downstream test run against the new snapshot is the thing you are paying for.</p>
+
+      <hr>
+
+      <h2>Decision 1 &mdash; The Cheapest Build Is the One You Prove You Can Skip</h2>
+
+      <p>The single largest reduction in build volume did not come from making builds faster. It came from establishing, cheaply and safely, that a build was unnecessary.</p>
+
+      <p>Here is the situation. You push to a feature branch. Your branch contains twelve modules; you changed one. But that one depends on three upstream modules in the same branch, and the naive scheduler rebuilds all four, because on a branch there are no published artifacts for the upstream three &mdash; they exist only on the default branch.</p>
+
+      <p>The optimization: for each upstream module, find the <strong>best common ancestor commit between the branch and the default branch</strong>. If the module was already built successfully at that commit, and nothing in the module changed on the branch since, then the artifact built at that commit is exactly the artifact the branch would produce. Don't rebuild it. Reuse its resolved version.</p>
+
+      <p>That last phrase is where the work is. Branch builds publish artifacts under munged versions &mdash; a version string derived from the branch, so branch artifacts never collide with default-branch artifacts. To skip an upstream build, you must hand the downstream build the <em>exact resolved version</em> of the artifact you are reusing. So:</p>
+
+      <ul>
+        <li>Every module build stores its <strong>resolved version</strong> in a column of its own, rather than being re-derived later from somewhere else.</li>
+        <li>A build plugin emits a metadata file with resolved versions, so the information survives outside the build system's own database.</li>
+        <li>The scheduler passes an overrides map into the build as an environment variable; the version-setting script parses it and rewrites the dependency versions before the build starts.</li>
+      </ul>
+
+      <p>Then the edge cases, each of which is a real class of bug:</p>
+
+      <table>
+        <thead>
+          <tr><th>Case</th><th>What goes wrong naively</th><th>Resolution</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Module was never built at the common ancestor</td><td>No version to reuse; either rebuild or fail</td><td>Walk back for the nearest successful build and reuse that, once proven safe</td></tr>
+          <tr><td>Branch is behind its default branch</td><td>You reuse an artifact newer than the branch expects</td><td>Only apply the optimization when the branch is not behind; otherwise reuse the previous build's own override map</td></tr>
+          <tr><td>Brand-new branch</td><td>No build history at all on the branch</td><td>Treat the divergence point as the ancestor</td></tr>
+          <tr><td>Dependency declared explicitly in the config</td><td>The human wrote it down for a reason the graph does not know</td><td>Exclude explicit declarations from the optimization</td></tr>
+        </tbody>
+      </table>
+
+      <p>And the rollout: repository allowlist, then percentage, then default-on, with a kill switch at every stage. An optimization that skips builds is, from a user's point of view, indistinguishable from a build system that silently lost their code. You roll that out slowly or you lose trust you cannot buy back.</p>
+
+      <div class="callout">
+        <div class="callout-label">The principle</div>
+        <p>Caching build <em>outputs</em> is a well-trodden problem. Caching the <em>decision not to build</em> is a different one: it requires you to prove equivalence between two commits, and to carry the identity of the artifact you are substituting all the way down the graph. If you cannot name the exact version you are reusing, you are not skipping a build &mdash; you are guessing.</p>
+      </div>
+
+      <hr>
+
+      <h2>Decision 2 &mdash; The Graph Needs a Watchdog, Because Events Lie</h2>
+
+      <p>The wavefront advances on events: a module build finished, therefore look at its downstream mappings. Events get lost. Processes get killed mid-transaction. A module gets deleted from a repository while an inter-project build that references it is still in flight. Every one of those leaves an inter-project build that will never complete, which means a pull request that never goes green, which means a support ticket.</p>
+
+      <p>We added a scheduled reconciler over active inter-project builds. Not a retry of the event &mdash; a reconciliation of the <em>state</em>:</p>
+
+      <ul>
+        <li>An inter-project build with no topological sort can never progress. Fail it explicitly rather than leaving it pending forever.</li>
+        <li>If every mapping is terminal but the parent is not marked complete, mark it complete. The event that would have done this is gone.</li>
+        <li>If a mapping points at a module that no longer exists, resolve it rather than blocking on a row that can never move.</li>
+        <li>If a module became unreachable because an upstream failed, mark it unreachable instead of leaving it "in progress".</li>
+      </ul>
+
+      <p>This is the same lesson I keep re-learning in distributed systems, and I wrote about the same shape in an <a href="iot-cold-chain-compliance-architecture.html">IoT context</a>: <strong>event-driven progress needs a state-driven backstop</strong>. The events are the fast path. The reconciler is the correctness path. If the only way your system reaches a terminal state is an event arriving, then your system's liveness is exactly as good as your message delivery, which is worse than you think.</p>
+
+      <hr>
+
+      <h2>Decision 3 &mdash; Consolidation, and the Race It Creates</h2>
+
+      <p>Consolidation is the optimization where two pending builds for the same branch collapse into one: if three commits land in ten seconds, build once at the tip, not three times. It is obviously correct and it is worth an enormous amount of capacity.</p>
+
+      <p>It is also where the nastiest races lived, because a build is not atomic. A repo build goes through a <em>discovering modules</em> phase before it knows what to build. Consolidating a new push into a build that is already discovering means the discovery may have already read the tree &mdash; at a commit that does not include the new push. The result is the worst possible outcome in CI: a build that reports success for a commit it never built.</p>
+
+      <p>We fixed specific instances of it twice &mdash; ensuring entities were re-read before recomputing commit info, handling the ordering explicitly &mdash; and both fixes held, and both left the same uneasy feeling: the invariant was now maintained by careful reasoning in several places rather than by construction.</p>
+
+      <p>So the third fix was to stop being clever: <strong>never consolidate a push build into a build that is already discovering</strong>. Enqueue a new build instead. It costs a little capacity in a narrow window, and it removes an entire category of race and the locking scheme that would have been needed to close it properly.</p>
+
+      <blockquote>Given a choice between a correct invariant enforced by locking and a slightly wasteful invariant enforced by construction, take the second one every time in a system where the failure mode is "we told you it passed and it didn't".</blockquote>
+
+      <p>A related one: when a push build and a dependency build merge, what downstream work should be scheduled? The intuitive answer &mdash; the union of what each would have scheduled &mdash; over-schedules badly. The right answer is to build the inter-project graph from <strong>what changed</strong>, not from what is about to be built. Those are different sets, and the second one grows every time a build gets consolidated into another.</p>
+
+      <hr>
+
+      <h2>The Scar &mdash; A Batch Insert That Changed the Failure Mode</h2>
+
+      <p>Large inter-project builds insert a lot of mapping rows &mdash; one per downstream module, and a parent POM change can mean thousands. Those inserts were happening one at a time. Batching them is a textbook fix, it measured beautifully, and we shipped it.</p>
+
+      <div class="callout">
+        <div class="callout-label">Scar</div>
+        <p>The batch path did not handle one case the row-at-a-time path did: mappings for <em>cancelled</em> builds were not always inserted. The rows were missing, so the graph walk had holes, so a fraction of inter-project builds could never reach a terminal state &mdash; they stayed in progress forever. A throughput change had quietly become a correctness change, and the symptom appeared far away from the cause, days later, in a state-machine that looked stuck for no reason. We reverted it in parts and came back to it with the cancellation path covered.</p>
+      </div>
+
+      <p>What I take from it: a batching change is not a performance change. It is a change to <em>atomicity and ordering</em>, and therefore to the failure modes. The review question is not "is this faster" &mdash; it obviously is &mdash; it is "which of the old path's implicit guarantees does the new one drop". Nobody asked that, including me.</p>
+
+      <hr>
+
+      <h2>Decision 4 &mdash; The Scheduler's Hot Path Is the Database, Always</h2>
+
+      <p>Every scaling problem we had traced back to the relational store. The build system's database is a workload most teams never see: enormous write volume of short-lived state rows, plus a scheduler that reads the same slow-moving metadata thousands of times a second. The fixes, roughly in order of payoff:</p>
+
+      <ol>
+        <li><strong>Cache the slow-moving reads.</strong> Tracing showed nearly all of the graph-walk time was spent fetching branch identifiers and module metadata &mdash; over and over, inside one execution. Bounded caches with an expiry measured in an hour removed most of it. The data changes on the timescale of a human editing a repository; the code was reading it at machine timescale.</li>
+        <li><strong>Delete the indexes that duplicate each other.</strong> One table carried a duplicate index on a column that already had one, plus a single-column index made redundant by a composite. Every one of those was write amplification on the highest-write table in the system, paid on every insert, forever.</li>
+        <li><strong>Stop streaming results you meant to page.</strong> Several data-access methods used a streaming result iterator and were effectively holding cursors while doing work. Replacing them with explicit keyset pagination made the memory profile predictable and unblocked a driver upgrade that had been stuck on exactly that pattern.</li>
+        <li><strong>Shrink the payload before you optimize the query.</strong> One widely-used read returned the full dependency graph and commit info inside every module state object. Almost no caller needed either. Removing them from the result was a bigger win than any index.</li>
+        <li><strong>Denormalize what you query in a loop.</strong> "The last successful build for this module" was an expensive query executed constantly. It became a column on the module, updated on completion.</li>
+        <li><strong>Do not compute metrics with queries.</strong> Active build counts were being produced by periodically querying the database. They became in-memory counters incremented by the code that causes the transition, produced by dedicated workers rather than by the scheduler, and the gauges that nobody had looked at in a year were deleted.</li>
+        <li><strong>Do not enqueue work you already know is a no-op.</strong> Skipped module builds were still being written to the queue, then read, then discarded. Not enqueueing them removed a meaningful share of daily queue inserts.</li>
+      </ol>
+
+      <p>Also: keep QA and production schemas aligned, deliberately, as a chore. A long series of unglamorous migrations dropping tables that existed only in one environment and adding indexes missing from the other. Every environment divergence is a future incident where the thing you tested is not the thing you shipped.</p>
+
+      <hr>
+
+      <h2>Decision 5 &mdash; A Queue That Survives Its Own Consumers</h2>
+
+      <p>The event queue in front of the scheduler needed three properties that its original design did not have.</p>
+
+      <p><strong>Failures must be recoverable.</strong> A poison event used to be simply lost. We added a table of failed queue items and a job that replays them with a retry cap. Not sophisticated; the point is that "we dropped it" stopped being the default outcome.</p>
+
+      <p><strong>The payload should be minimal.</strong> Incoming webhook payloads carry a lot the scheduler will never read. A "lightener" strips them before enqueueing. Less to store, less to deserialize, fewer schema-drift surprises.</p>
+
+      <p><strong>Deserialization must not be coupled to a schema you don't control.</strong> Queue items were being deserialized into typed objects at read time, which meant any upstream model change turned into a wave of unreadable items sitting in the queue. Storing and reading them as opaque strings, then parsing at the point of use, made the queue resilient to schema changes by construction. After one incident caused by exactly this, we also introduced our own internal models for the provider's push and delete events, rather than consuming the vendor's model directly &mdash; and removed the migration shim once it was done.</p>
+
+      <p>The general rule: <strong>a queue should be the dumbest component in the system.</strong> Every piece of intelligence you put in it becomes a way for it to reject your messages during an incident.</p>
+
+      <hr>
+
+      <h2>Decision 6 &mdash; Provision Capacity Against the Graph, Not the Queue</h2>
+
+      <p>Build pods take time to start: pull the image, mount caches, warm the toolchain. If you only start a pod when a module build becomes runnable, every module in a dependency chain pays that startup serially.</p>
+
+      <p>But the scheduler knows the graph. It knows which modules are <em>waiting for upstream builds</em>, which means it knows with reasonable confidence what will become runnable in the next couple of minutes. So we provisioned a configurable percentage of those pods early, so the container is warm when the upstream finishes.</p>
+
+      <p>With one exclusion that is worth stating because it is the kind of detail that only comes from looking at real data: frontend modules were excluded, because in that repo layout they typically build together in the same container, so pre-provisioning for them bought nothing and consumed cluster capacity that the Java builds needed.</p>
+
+      <hr>
+
+      <h2>What This Cost, and What It Bought</h2>
+
+      <p>Over that period the system went from roughly 80,000 to over 400,000 builds a month &mdash; a fivefold increase in load, most of it the deliberate cost of propagating every change to every consumer &mdash; while critical incidents went <em>down</em> and artifact storage costs went down with them. Almost none of that came from a single rewrite. It came from a long series of the changes above: skip what didn't change, reconcile what events lost, stop asking the database questions it has already answered, and choose invariants you can enforce by construction.</p>
+
+      <p>The uncomfortable part is how much of the work was subtraction. Unused jobs, dead configuration flags that had been false since a date two years earlier, a notification path nobody had read in a year, duplicate indexes, metrics no dashboard displayed. A build system accretes this faster than a product does, because nobody's roadmap has "delete the thing that works" on it &mdash; and every dead path is something an on-call engineer has to rule out at 3am before they can find the live one.</p>
+
+      <hr>
+
+      <h2>Key Takeaways</h2>
+
+      <ol>
+        <li><strong>Unpinned snapshots move the cost from upgrades to builds.</strong> No dependency-bump ritual, no stale library anywhere &mdash; paid for by propagating every change through the whole downstream graph immediately, which is what inter-project builds are.</li>
+        <li><strong>Feedback must reach the author, not the consumer.</strong> The value of propagating within minutes is that the person who broke something still remembers why they changed it.</li>
+        <li><strong>The best optimization is a provable skip.</strong> Establish equivalence with the default branch, reuse the exact resolved artifact version, and carry that identity all the way through the graph.</li>
+        <li><strong>Roll out anything that skips work behind an allowlist and a percentage.</strong> A wrongly-skipped build is indistinguishable from lost code.</li>
+        <li><strong>Event-driven progress needs a state-driven reconciler.</strong> If terminal states are only reachable via events, liveness equals delivery reliability.</li>
+        <li><strong>Prefer invariants enforced by construction over invariants enforced by locking.</strong> Refusing to consolidate into a discovering build removed a whole race class for a rounding error of capacity.</li>
+        <li><strong>Schedule downstream work from what changed, not from what will be built.</strong> Those sets diverge the moment builds consolidate.</li>
+        <li><strong>Batching is an atomicity change, not a speed change.</strong> Ask which implicit guarantee the old path had that the new one drops.</li>
+        <li><strong>Cache reads whose data changes at human speed.</strong> Metadata read thousands of times per second changes when someone edits a repository.</li>
+        <li><strong>Shrink payloads before tuning queries, and delete redundant indexes.</strong> Both are paid on every single operation.</li>
+        <li><strong>Never compute metrics with database queries.</strong> Counters at the transition, produced by a worker, not by the scheduler.</li>
+        <li><strong>Keep the queue dumb and its payloads opaque.</strong> Typed deserialization at read time turns an upstream schema change into an outage.</li>
+        <li><strong>Provision against the graph.</strong> The scheduler knows what is about to be runnable; start those containers early &mdash; except where the build layout makes it pointless.</li>
+        <li><strong>Budget for deletion.</strong> Dead flags and unused jobs are not free: they are the paths on-call has to eliminate before finding the real one.</li>
+      </ol>
+    </article>
+  </main>
+
+  <footer id="footer-slot"></footer>
+
+  <script src="../js/site.js"></script>
+</body>
+</html>

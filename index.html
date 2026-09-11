@@ -21,6 +21,51 @@
 
     <div class="section-label">Recent</div>
 
+    <a href="posts/agents-that-summarize-work.html" class="post-card">
+      <div class="post-date">September 2026</div>
+      <div class="post-title">Out of the Dumb Zone: Engineering Agents That Summarize Real Work</div>
+      <div class="post-excerpt">Five versions of the same feature, and four agents &mdash; one per data type, each with its own prompt, tools and eval slice. Summary-of-summaries, then paginated tools instead of stuffed context, then doing in code what code does better, reading the diff only when the description is too thin, judging a person&rsquo;s slice of a thread rather than the thread, then an LLM judge that scores whether every claim carries a link to its evidence, then evolving the prompts <em>and</em> the tool descriptions against that score. Plus why the eval harness is what lets you not use the newest model &mdash; and the one we chose not to ship.</div>
+      <span class="post-tag">ai agents</span>
+      <span class="post-tag">evals</span>
+      <span class="post-tag">llm</span>
+    </a>
+
+    <a href="posts/scheduling-builds-at-scale.html" class="post-card">
+      <div class="post-date">September 2026</div>
+      <div class="post-title">Don&rsquo;t Build What Didn&rsquo;t Change: Scheduling a Build System Past 400,000 Builds a Month</div>
+      <div class="post-excerpt">Nothing was pinned: every module published a snapshot, so one merge had to propagate through the whole downstream graph before anyone could call it integrated. The model, the optimization that proved builds unnecessary, the consolidation race that could have marked an unbuilt commit green, and a batch insert that turned throughput into a correctness bug.</div>
+      <span class="post-tag">ci/cd</span>
+      <span class="post-tag">distributed systems</span>
+      <span class="post-tag">scale</span>
+    </a>
+
+    <a href="posts/tracing-a-build-system.html" class="post-card">
+      <div class="post-date">September 2026</div>
+      <div class="post-title">Where Did the Build Time Go? Tracing a Distributed CI System</div>
+      <div class="post-excerpt">&ldquo;The build took 22 minutes&rdquo; &mdash; four of them compiling. Spans over Kafka, traces in object storage queried with SQL, and six per-stage delay metrics with six different owners. Plus the controller quietly making millions of Kubernetes API calls a day for nothing.</div>
+      <span class="post-tag">observability</span>
+      <span class="post-tag">tracing</span>
+      <span class="post-tag">kubernetes</span>
+    </a>
+
+    <a href="posts/locking-down-the-build.html" class="post-card">
+      <div class="post-date">September 2026</div>
+      <div class="post-title">The Build Container Is Your Softest Target: Locking Down CI Without Breaking It</div>
+      <div class="post-excerpt">A build container runs arbitrary code with credentials attached &mdash; that is the product, not a bug. Default-deny egress that stopped chasing IP ranges and started allowing names, secrets authorized against the repository being built, unprivileged Docker-in-Docker with the residual privilege mediated by policy, and why mocking a security control makes it documentation.</div>
+      <span class="post-tag">security</span>
+      <span class="post-tag">supply chain</span>
+      <span class="post-tag">ci/cd</span>
+    </a>
+
+    <a href="posts/s3-as-source-of-truth.html" class="post-card">
+      <div class="post-date">September 2026</div>
+      <div class="post-title">Object Storage as the Source of Truth: An Engineering Data Platform, and the Agents on Top of It</div>
+      <div class="post-excerpt">Scheduled jobs to a bucket, a warehouse that is only a materialization, and a modelling layer where identity and time turn out to be the hard part. Then the agents that turned the same data into narratives &mdash; and the design decision about what a metrics product is <em>not</em> for.</div>
+      <span class="post-tag">data engineering</span>
+      <span class="post-tag">ai agents</span>
+      <span class="post-tag">architecture</span>
+    </a>
+
     <a href="posts/spec-driven-ralph-loop-foodia.html" class="post-card">
       <div class="post-date">September 2026</div>
       <div class="post-title">A &euro;7,200 Paella: Spec-Driven Development, a Ralph Loop, and the Bugs Neither Caught</div>
