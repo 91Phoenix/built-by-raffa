@@ -1,6 +1,10 @@
+.DS_Store
 .git
 .gitignore
 .assetsignore
-.DS_Store
+.github
+backend
+infra
+README.md
 wrangler.jsonc
 node_modules

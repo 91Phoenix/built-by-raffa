@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ask &mdash; Bradicode</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav id="nav-slot"></nav>
+
+  <main>
+    <div class="hero">
+      <h1>Ask the blog.</h1>
+      <p>A small assistant that reads these posts and nothing else. Ask it whether I have built something, hit a problem, or used a tool. It links the posts it drew on.</p>
+    </div>
+
+    <section class="chat" aria-label="Chat with the blog">
+      <div id="chat-log" class="chat-log" role="log" aria-live="polite"></div>
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" type="text" maxlength="1000" autocomplete="off"
+               placeholder="Has Raffaele worked with Kubernetes?" aria-label="Your question">
+        <button type="submit">Ask</button>
+      </form>
+      <p class="chat-note">Answers come from a language model reading the posts; check the linked post before quoting it.</p>
+    </section>
+  </main>
+
+  <footer id="footer-slot"></footer>
+  <script src="js/config.js"></script>
+  <script src="js/site.js"></script>
+  <script src="js/chat.js"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+deepseek_api_key = "sk-..."
+allowed_origin   = "https://bradicode.com"
+budget_email     = "you@example.com"
+# aws_region     = "eu-west-1"
