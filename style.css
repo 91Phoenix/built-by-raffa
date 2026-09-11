@@ -459,7 +459,8 @@ article figure .diagram-scroll {
   padding: 0.75rem;
 }
 
-article figure img {
+article figure img,
+article figure video {
   display: block;
   width: 100%;
   height: auto;

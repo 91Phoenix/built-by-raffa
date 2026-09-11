@@ -18,7 +18,7 @@
         <div class="post-meta">
           <span>September 2026</span>
           <span class="dot">&middot;</span>
-          <span>22 min read</span>
+          <span>26 min read</span>
         </div>
       </div>
 
@@ -445,13 +445,50 @@ FAILED (failures=1)</code></pre>
 
       <p>The paella that cost &euro;7,208 now costs &euro;7. Across all 841 recipes, <strong>nothing exceeds &euro;50 per serving</strong> &mdash; the worst is &euro;16, the median is &euro;1.08. Fifty-two new tests pin each of these cases, one per failure above, and the suite is 755 green.</p>
 
-      <p>For the images there is no clean answer. <code>media/</code> is gitignored and <code>image_url</code> is empty on every shipped row, and the source site's <code>robots.txt</code> disallows AI crawlers outright, so re-crawling is the operator's call and not something an agent should do on his behalf. What the branch does instead is stop the loss for next time &mdash; the loader now carries <code>image_url</code> through &mdash; and draw an honest placeholder per recipe: a flat colour, the dish name, the category, and the words <em>immagine non disponibile</em>. Nothing pretending to be a photograph.</p>
+      <p>For the images there was no clean answer at first. <code>media/</code> is gitignored and <code>image_url</code> is empty on every shipped row, and the source site's <code>robots.txt</code> disallows AI crawlers outright, so re-crawling is the operator's call and not something an agent should do on his behalf. What the branch does is stop the loss for next time &mdash; the loader now carries <code>image_url</code> through &mdash; and draw an honest placeholder per recipe: a flat colour, the dish name, the category, and the words <em>immagine non disponibile</em>. Nothing pretending to be a photograph.</p>
 
-      <p>Which is what the walkthrough below shows, on the fixed branch: search, a recipe with a per-ingredient cost breakdown, the weekly plan, and the spending dashboard.</p>
+      <h3>Then we tried to actually run the crawler</h3>
+
+      <p>The project owner ran the one command that should have fixed the images properly, as the site's own declared bot. It died immediately:</p>
+
+      <pre><code>$ python run_crawler.py recipes
+KeyError: 'Spider not found: giallo_recipes'</code></pre>
+
+      <p>The spider is called <code>giallo_recipes</code> and it does exist. What does not exist is <code>scrapy.cfg</code>, which was never committed &mdash; so <code>get_project_settings()</code> returns Scrapy's defaults, <code>SPIDER_MODULES</code> is empty, and no spider can be discovered. <strong>The crawler has never been runnable from a clean clone.</strong> That is also the real reason the photographs were unrecoverable: the tool that would refetch them has never started.</p>
+
+      <p>Fixing that revealed the next one. Any use of the <code>scrapy</code> CLI &mdash; <code>fetch</code>, <code>shell</code>, <code>list</code> &mdash; failed on <code>ITEM_PIPELINES</code> naming <code>ImageDownloadPipeline</code>, a class that has never been in <code>pipelines.py</code>. <code>run_crawler.py</code> overrides that setting, which is precisely why nobody noticed.</p>
+
+      <p>With both fixed the crawl ran, reported success, and collected <strong>56 recipes</strong>. The stats say why: <code>request_depth_max: 1</code> &mdash; page one of each of the four categories, then nothing. The pagination selectors were written against markup the site no longer serves: it looks for <code>a[rel="next"]</code> and <code>a.gz-page-link</code>, while the page renders <code>a.page</code>, <code>a.page.cur</code> and an <code>a.gz-arrow.next</code> arrow, with pages as path segments (<code>/ricette-cat/page2/Primi/</code>). No error, no warning &mdash; the same silent-loss shape as the <code>MAX_PAGES = 15</code> cap in the scraper post, three months later, in a different file.</p>
+
+      <div class="callout">
+        <div class="callout-label">Scar</div>
+        <p>And one of the six was mine. Placeholders live in <code>Recipe.image</code> like any other image, and both the crawler pipeline and <code>download_images</code> decided whether to fetch the real photo with <code>if not recipe.image</code>. Once my placeholders existed, that test was false for every recipe: the crawl set <code>image_url</code> on 56 rows and downloaded <strong>zero</strong> photographs. I had introduced exactly the bug class I had spent the afternoon writing about &mdash; a value that is indistinguishable from the thing it stands in for. There is now one definition of what counts as a photograph, in <code>recipes/images.py</code>, used by all three call sites.</p>
+      </div>
+
+      <p>With the selectors fixed, the crawl walks the whole of each category. It had found <strong>3,549 recipes and downloaded 3,547 photographs</strong> when we stopped it early, still going. The database had 841. That number was never the site's catalogue: it was what fitted inside fifteen pages per category before the cap, and then what fitted in one page per category after the selectors broke.</p>
+
+      <h3>The pipeline was red before any of this</h3>
+
+      <p>The pull request went red on CI, and it took reading the run to see that nothing on the branch had caused it:</p>
+
+      <pre><code>ModuleNotFoundError("No module named 'agno.models.metrics'")
+TypeError: cannot pickle 'traceback' object</code></pre>
+
+      <p>The workflow installs a hand-written package list instead of <code>requirements.txt</code>, so the agent framework was resolved fresh on every run and has since moved past the pinned <code>&lt;=2.6.11</code>. The second line is the parallel test runner failing to serialise the first one, which is how the real error stayed invisible. The lint step would have failed next for the same reason: <code>ruff</code> installed unpinned and run with no config, and a later release widened its default rules from clean to <strong>428 findings</strong> on untouched code.</p>
+
+      <p>A pin that CI ignores is not a pin. The workflow now installs <code>requirements.txt</code>, pins the linter, and states its rule set in a <code>ruff.toml</code>; <code>--parallel</code> is gone so a failing test can say which test it was; and the path filters no longer watch two files that do not exist while ignoring the Scrapy project, the dependency list and the crawler entry point.</p>
+
+      <h3>What live API keys changed</h3>
+
+      <p>Receipt scanning was pinned to a vision model the provider had retired, so every scan died on <code>Invalid model</code> and returned a 500 carrying the raw exception. DeepSeek does have vision, on <code>deepseek-v4-flash-vision-exp</code> &mdash; not in the <code>/models</code> listing, so it has to be named explicitly, and sending an image to the text model does not error, it silently ignores it (<em>"But there is [Unsupported Image] placeholder. As AI, cannot see image"</em>, says the model's own reasoning trace). It is also a reasoning model: extracting twelve receipt lines spent <strong>4,422 tokens thinking</strong> before emitting a character of JSON, so the code's <code>max_tokens=1000</code> truncated every reply and made it look like a model that could not read receipts. With the budget raised it returns all twelve items and a total matching the receipt exactly.</p>
+
+      <p>And with the chat working, one more: asked what the week costs, the agent called <code>show_spending</code>, got back <em>"no receipts found"</em>, and invented an answer &mdash; <em>"siamo nell'ordine dei 100&ndash;140 &euro;"</em> &mdash; for a week the dashboard priced at &euro;68 from the same database. The tool only ever looked at receipts. It leads with the plan estimate now, which is the number the question was about.</p>
+
+      <p>Here is the result, on the fixed branch, with real photographs and live keys: the recipe grid, a search, a recipe costed ingredient by ingredient, the week's plan, the spending dashboard comparing estimate against a scanned receipt, and the agent answering the cost question from the tool instead of from imagination.</p>
 
       <figure>
-        <img src="../img/posts/foodia-walkthrough.gif" alt="Screen recording of Foodia: searching recipes, opening a recipe with per-ingredient costs, the weekly meal plan, and the spending dashboard" loading="lazy">
-        <figcaption>Left to right: 841 recipes with placeholder tiles and per-recipe cost badges; <em>Torta di mele</em> at &euro;3.26 of apples, &euro;0.38 of flour, &euro;0.80 of eggs; the week's plan with sweet breakfasts and a missing-ingredient count per meal; and &euro;68.00 estimated for the plan, a number that was &euro;14.00 an hour earlier.</figcaption>
+        <video src="../img/posts/foodia-walkthrough.mp4" autoplay loop muted playsinline controls preload="metadata" aria-label="Walkthrough of Foodia: the recipe grid, a search, a recipe with per-ingredient costs, the weekly plan, the spending dashboard, and the chat agent answering what the week costs"></video>
+        <figcaption>The recipe grid with per-recipe cost badges; <em>Torta caprese</em> broken down to &euro;2.55 of chocolate, &euro;2.38 of hazelnuts, &euro;1.36 of butter &mdash; and a vanilla pod with no price at all, because the app now refuses to guess what one weighs; the week's plan with sweet breakfasts; &euro;65.00 estimated against &euro;33.00 actually spent, from a scanned receipt; and the agent answering the cost question from <code>show_spending</code> instead of inventing a range.</figcaption>
       </figure>
 
       <hr>
@@ -529,6 +566,9 @@ docker compose exec -T db psql -q -U foodai -d foodai < /tmp/seq.sql
         <li><strong>Spec-driven process makes the code match the spec; it cannot make the spec match the world.</strong> Thirty reviewed pull requests, 703 tests and a glossary, and the thing that found a &euro;4,500 plate of fried rice was running the app and reading the output.</li>
         <li><strong>A software factory still needs someone to open the box.</strong> Not to read the diff &mdash; I never did &mdash; but to use the product and check its numbers against reality. Every defect here was visible in one afternoon of clicking, and invisible to every layer that only ever compared code against a ticket. Whatever you automate, keep that afternoon.</li>
         <li><strong>Fix the layer the bug lives in, not the symptom above it.</strong> The savoury-quiche breakfast tempted me into an exclusion list, and the exclusion list immediately served fried chickpea fritters because <code>'pane'</code> is inside <code>"Panelle"</code>. The fix was to stop asking the title and start asking the category. If your patch is another keyword, you are still playing the game that produced the bug.</li>
+        <li><strong>Run the thing, then run the thing that produces the thing.</strong> The crawler had never started from a clean clone &mdash; a missing <code>scrapy.cfg</code>, then a pipeline class that was never written, then pagination selectors three months stale, which is why 841 recipes looked like a catalogue and was actually one page per category. Every one of those was invisible to tests, to review and to CI, and obvious within a minute of typing the command.</li>
+        <li><strong>An unpinned dependency in CI is a clock, not a check.</strong> The pipeline was green in June and red in September with nobody touching it: the agent framework moved past a pin CI ignored, and the linter's defaults widened under it. If the build installs a package list nobody wrote down, it is measuring the date.</li>
+        <li><strong>A stand-in value must be distinguishable from the real thing.</strong> My own placeholder images were stored in the same field as photographs and silently taught the crawler that every recipe already had one. I wrote that bug into a codebase while documenting the same shape of bug in it.</li>
       </ol>
     </article>
   </main>
