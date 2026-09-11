@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A &euro;7,200 Paella: Spec-Driven Development, a Ralph Loop, and the Bugs Neither Caught &mdash; Bradicode</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <nav id="nav-slot"></nav>
+
+  <main>
+    <a href="index.html" class="back-link">&larr; All posts</a>
+
+    <article>
+      <div class="post-header">
+        <h1>A &euro;7,200 Paella: Spec-Driven Development, a Ralph Loop, and the Bugs Neither Caught</h1>
+        <div class="post-meta">
+          <span>September 2026</span>
+          <span class="dot">&middot;</span>
+          <span>26 min read</span>
+        </div>
+      </div>
+
+      <p>The project is called <strong>Foodia</strong>. The name is bad. I typed it into <code>gh repo create</code> on a Tuesday, told myself I would fix it later, and then spent four months and 340 commits not fixing it. Nothing else about the project was decided that casually, which is roughly the point of this post: everything downstream of the name went through a written specification, a domain glossary, architecture decision records, and an orchestration loop that turns GitHub issues into reviewed pull requests without me typing the code. The name is the one artifact with no spec behind it.</p>
+
+      <p>Foodia is a meal-planning platform: 841 Italian recipes and 891 ingredient encyclopedia entries in Postgres, a Django REST backend, a React frontend, and an LLM agent with eighteen tools that plans your week, tracks your pantry, reads your grocery receipt and tells you what it all costs. <a href="crawling-with-scrapy.html">The scraper that filled that database</a> was the subject of an earlier post. This one is about what got built on top, how it got built, and what I found when I pulled the repo onto a clean machine and actually looked at the numbers it produces.</p>
+
+      <p>One thing to be clear about before anything else, because it changes how you should read the rest: <strong>I have not read most of this code.</strong> Foodia is not a codebase I maintain. It is an experiment in running a software factory &mdash; writing the specification, the glossary, the standards and the tickets, then letting a loop of agents produce the implementation, review it, fix it and hand me a pull request. My job in that arrangement is the input side and the merge button. For long stretches, the only thing I read about a feature was the ticket I wrote and the PR description an agent wrote back.</p>
+
+      <p>That is the experiment, and it mostly worked: thirty pull requests written, reviewed and fixed by agents, merged by me. It also means the section near the end is not a retrospective. It is me reading my own repository for the first time, and finding a paella priced at &euro;7,208 &mdash; which sailed through every layer of the process, because each layer was checking whether the code did what the spec said, and the spec never said anything about what a pistil of saffron weighs.</p>
+
+      <hr>
+
+      <h2>Part 1 &mdash; The Spec Layer</h2>
+
+      <p>The technique, which I picked up from Matt Pocock's writing on driving agents from specifications rather than chat, is that the durable artifact of a feature is not the code. It is the sentence that defines the term. So the repo root holds <code>CONTEXT.md</code>: a glossary where every domain concept gets a definition, a storage location, and &mdash; the part that does the real work &mdash; a list of words you are <em>not</em> allowed to use for it.</p>
+
+      <pre><code>**Batch Cooking (Batch Group)**:
+Multiple MealPlan entries sharing the same `batch_group` UUID. A single
+cooking session produces food consumed over multiple days (e.g. ciambellone
+baked Monday covers breakfast Mon-Fri). The originating entry is marked
+`is_batch_origin: true`.
+_Avoid_: leftovers (loaded term), meal prep</code></pre>
+
+      <p>That <code>_Avoid_</code> line is the highest-leverage text in the repository. An agent handed "implement leftovers support" will invent a <code>Leftover</code> model with a foreign key to <code>MealPlan</code>, and it will be defensible, and it will be wrong &mdash; because the concept already exists as a UUID shared across rows. Naming the rejected words prevents the parallel vocabulary from ever being born. There are eighteen such entries, covering batch cooking, dietary splits, shelf life, seasonality, per-user price overrides, receipt scans and baseline cost.</p>
+
+      <p>Underneath the glossary sits an <strong>example dialogue</strong> &mdash; a scripted conversation between "Dev" and "Domain Expert" that walks the hard cases:</p>
+
+      <blockquote>
+        <p><strong>Dev</strong>: And the ciambellone baked Monday for the whole week?</p>
+        <p><strong>Domain Expert</strong>: One entry on Monday is <code>is_batch_origin: true</code> with <code>batch_group: abc-123</code>. Tuesday through Friday have entries with the same <code>batch_group</code> referencing the same recipe. The planner knows not to schedule new breakfasts, and the shopping list buys ingredients only once.</p>
+      </blockquote>
+
+      <p>This is the part I would skip if I were in a hurry, and the part that pays. A definition tells an agent what a field is called. A dialogue tells it what the system is supposed to <em>do</em> when a household of four contains one vegetarian and lunch is a primo plus a secondo. That case &mdash; four <code>MealPlan</code> rows on one date and meal type &mdash; is the reason <code>MealPlan</code> has no unique constraint on <code>(user, date, meal_type)</code>, and the reason is written down where the next agent will read it.</p>
+
+      <p>Decisions that survive a debate go to <code>docs/adr/</code>, with the rejected options kept:</p>
+
+      <pre><code># UserIngredientPrice as separate model, not on IngredientStock
+
+1. **`unit_price` on `IngredientStock`** &mdash; Dies when stock is consumed via
+   `auto_remove_stocks`. User would lose their price override every time
+   they eat.
+2. **`unit_price` on `IngredientInfo`** &mdash; System-wide, not per-user. Fails
+   the core requirement: different users pay different prices.
+3. **`UserIngredientPrice` as separate model** &mdash; Chosen. Survives pantry
+   depletion.</code></pre>
+
+      <p>Option 1 is exactly what an agent optimising for the smallest diff would pick. It is one field on an existing model, it passes every test you would think to write, and it silently deletes the user's data the first time the pantry auto-depletes. The ADR is a tripwire in front of that.</p>
+
+      <div class="callout">
+        <div class="callout-label">Scar</div>
+        <p>Both agent prompts open with <em>"Read AGENTS.md at repo root for project conventions."</em> <code>AGENTS.md</code> has never existed in this repository &mdash; not in the working tree, not in any of the 340 commits. Every agent that ran for a month was instructed to consult a file it could not find, and none of them complained, because a missing file reads to an agent as an empty one. Meanwhile the conventions file that <em>does</em> exist, <code>.sandcastle/CODING_STANDARDS.md</code>, contains the line <strong>"Frontend: Vue 3 Composition API, single-file components"</strong>. The frontend is React 18 with Create React App and has been since the first commit. The spec layer needs its own tests, and I did not write any.</p>
+      </div>
+
+      <hr>
+
+      <h2>Part 2 &mdash; The Loop</h2>
+
+      <p>A Ralph loop, in the original sense: one prompt, one sandbox, run it again until there is nothing left to do. The shape of the iteration is the part I care about &mdash; plan centrally, execute in parallel, review before a human ever looks &mdash; and it survived a change of runtime underneath it. The first version, which is the one still committed to the repo as <code>.sandcastle/main.mts</code>, was 140 lines of TypeScript on top of an off-the-shelf sandbox library; I tried it, kept the shape, and replaced the machinery with my own runner. The pull requests below came out of the replacement.</p>
+
+      <p>Because the prototype is what the repository contains, it is what I can quote, and the design it encodes is the design that shipped.</p>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 330" role="img" aria-label="Three-phase loop: planner reads labelled issues and emits a plan, then one sandbox per unblocked issue runs an implementer and a reviewer in parallel, ending at an open pull request">
+          <defs>
+            <marker id="arr-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+          </defs>
+
+          <text x="360" y="20" text-anchor="middle" class="d-text-sm">One iteration. Ten iterations maximum, then the loop stops on its own.</text>
+
+          <rect x="30" y="38" width="150" height="58" rx="5" class="d-box-soft"/>
+          <text x="105" y="60" text-anchor="middle" class="d-text-b">GitHub Issues</text>
+          <text x="105" y="78" text-anchor="middle" class="d-mono">label: ready-for-agent</text>
+
+          <rect x="30" y="126" width="150" height="72" rx="5" class="d-box"/>
+          <text x="105" y="148" text-anchor="middle" class="d-text-b">Phase 1 &mdash; Planner</text>
+          <text x="105" y="166" text-anchor="middle" class="d-text-sm">dependency graph</text>
+          <text x="105" y="184" text-anchor="middle" class="d-mono">&lt;plan&gt; JSON</text>
+
+          <line x1="105" y1="98" x2="105" y2="122" class="d-line" marker-end="url(#arr-loop)"/>
+
+          <rect x="250" y="110" width="200" height="104" rx="5" class="d-box-outline"/>
+          <text x="350" y="130" text-anchor="middle" class="d-text-accent">one sandbox per issue</text>
+          <text x="350" y="150" text-anchor="middle" class="d-mono">branch sandcastle/issue-N</text>
+          <text x="350" y="170" text-anchor="middle" class="d-mono">postgres + pgvector booted</text>
+          <text x="350" y="190" text-anchor="middle" class="d-mono">migrate + loaddata dump.json</text>
+          <text x="350" y="208" text-anchor="middle" class="d-text-sm">&nbsp;</text>
+
+          <line x1="182" y1="162" x2="242" y2="162" class="d-line" marker-end="url(#arr-loop)"/>
+          <text x="212" y="155" text-anchor="middle" class="d-text-sm">fan out</text>
+
+          <rect x="500" y="70" width="190" height="62" rx="5" class="d-box"/>
+          <text x="595" y="92" text-anchor="middle" class="d-text-b">Phase 2 &mdash; Implementer</text>
+          <text x="595" y="110" text-anchor="middle" class="d-text-sm">TDD &middot; local CI &middot; open PR &middot; wait green</text>
+
+          <rect x="500" y="158" width="190" height="62" rx="5" class="d-box"/>
+          <text x="595" y="180" text-anchor="middle" class="d-text-b">Phase 3 &mdash; Reviewer</text>
+          <text x="595" y="198" text-anchor="middle" class="d-text-sm">comment &middot; fix &middot; push &middot; re-review</text>
+
+          <line x1="452" y1="140" x2="494" y2="108" class="d-line" marker-end="url(#arr-loop)"/>
+          <line x1="595" y1="134" x2="595" y2="154" class="d-line" marker-end="url(#arr-loop)"/>
+          <path d="M690,189 C712,189 712,101 692,101" class="d-line d-dash" marker-end="url(#arr-loop)"/>
+          <text x="662" y="146" text-anchor="middle" class="d-text-sm">until clean</text>
+
+          <rect x="250" y="252" width="440" height="44" rx="5" class="d-box-accent"/>
+          <text x="470" y="272" text-anchor="middle" class="d-text-inv">Pull request, open. No auto-merge. A human presses the button.</text>
+          <text x="470" y="288" text-anchor="middle" class="d-text-sm">&nbsp;</text>
+
+          <line x1="595" y1="224" x2="595" y2="248" class="d-line" marker-end="url(#arr-loop)"/>
+
+          <text x="105" y="272" text-anchor="middle" class="d-text-sm">Label removed</text>
+          <text x="105" y="288" text-anchor="middle" class="d-text-sm">when review is clean</text>
+          <line x1="250" y1="274" x2="160" y2="274" class="d-line d-dash" marker-end="url(#arr-loop)"/>
+        </svg>
+        </div>
+        <figcaption>The planner is the only serialised phase. Everything after it runs once per issue, in its own container, with its own database.</figcaption>
+      </figure>
+
+      <h3>Phase 1: the planner is paranoid on purpose</h3>
+
+      <p>The planner reads every open issue labelled <code>ready-for-agent</code> and decides which ones can be worked <em>right now</em> without waiting on another. The blocking rules are deliberately broad &mdash; an issue is blocked if it references another, if it needs a model or utility another introduces, if it touches the same files, or if it depends on an API shape another will establish:</p>
+
+      <pre><code>Be strict: if there's any reasonable doubt, mark it as blocked. Only mark an
+issue as unblocked when it can be fully implemented independently with zero
+waiting on other issues.</code></pre>
+
+      <p>Bias toward blocked is the right default, and it took one painful afternoon of merge conflicts to believe it. Two agents adding a field to the same model produce two migrations with the same parent, and resolving that costs more human attention than running the second issue in the next iteration would have. The branch name is pinned to <code>sandcastle/issue-{id}</code> precisely so that re-planning is idempotent: the same issue always resolves to the same branch, so a crashed iteration resumes instead of forking.</p>
+
+      <p>Output is a JSON object inside <code>&lt;plan&gt;</code> tags, parsed against a schema. If the tag is absent the loop breaks rather than guessing &mdash; the one place in the whole system where I preferred a hard stop to a heuristic.</p>
+
+      <h3>Phase 2 and 3: implement, then review, per issue, in parallel</h3>
+
+      <p>Every unblocked issue gets its own container on its own branch, and inside it an implementer runs to completion before a reviewer looks at the result. Three properties of that fan-out earned their place, and they are the ones I carried from the prototype into my own runner.</p>
+
+      <p><strong>Settle, do not race.</strong> One agent hitting an unfixable test must not cancel the other four, so the parallel section waits for every branch to finish or fail independently rather than aborting on the first rejection. <strong>Kill on silence, not on crash.</strong> A stuck agent is the expensive failure mode &mdash; a crashed one costs you nothing but a log line &mdash; and five minutes with no output is a reliable signal that a session is never coming back. <strong>Use commits as the completion test.</strong> An issue that produced no commit is not a failure; it is the agent reading an under-specified ticket and stopping, which the implement prompt explicitly tells it to do. Branching on "were there commits" is how the loop tells those apart without parsing prose, and only branches with commits go on to be reviewed.</p>
+
+      <p>The implementer's contract is strict TDD (write the failing test first, per sub-step), then the full local suite, then <code>ruff</code>, then a frontend build, then a PR whose body must contain a manual test plan for a human, then poll CI until green. The reviewer then inspects the diff for correctness, test coverage, security, Django-specific traps (missing migrations, N+1 queries) and style, posts a review comment <em>whether or not</em> it found anything, fixes what it found, pushes, waits for CI and re-reviews until clean. It is required to name its own model in the comment, which is how I can tell a bad review from a bad reviewer:</p>
+
+      <pre><code>## Review (deepseek/deepseek-v4-pro)
+**Findings**: &lt;summary&gt;
+**CI status**: &lt;green/red/yellow&gt;
+**Verdict**: &lt;&#9989; / &#10060; / &#8987;&gt;</code></pre>
+
+      <p>The one thing the loop is forbidden to do is merge. Thirty pull requests came out of <code>sandcastle/issue-*</code> branches; I merged all thirty by hand, against 43 merged from branches I wrote myself. Eleven commits in the history are the reviewer fixing its own implementer's work &mdash; <code>Address review comments: unit validation in agent tool, fix disambiguation message leak, rename/add tests</code> is a real commit message, and the reviewer found that leak, not me.</p>
+
+      <p>Throughput was lumpy in exactly the way you would expect from a serialised planner: ten of the thirty PRs merged on a single day, 4 June, then long gaps while I read them.</p>
+
+      <div class="callout">
+        <div class="callout-label">Scar</div>
+        <p>The harness under the first version took nine commits in one day to stabilise, and none of them were about prompts: <code>use explicit sudo, not sandcastle's sudo prefix</code>, <code>chain dependent hooks to avoid parallel race</code>, <code>stabilize planner hooks, fix virtiofs mounts, bake pip deps</code>, <code>rebuild image with PostgreSQL server</code>, <code>add build-image.sh with host UID/GID auto-detection</code>. An agent harness is not a prompt with a wrapper. It is a build of a Linux image with a database server, a compiled <code>pgvector</code>, a GitHub CLI and a UID that matches the host's so the mounted workspace is writable. Budget for that as infrastructure, because that is what it is.</p>
+      </div>
+
+      <p>One nice consequence of doing it properly: each sandbox boots Postgres, creates the <code>vector</code> extension, runs <code>migrate</code>, and loads the committed <code>dump.json</code> fixture before the agent starts. Every agent gets 841 real recipes to test against, isolated from every other agent. That hook is four lines of shell and it is the difference between tests that pass and tests that mean something.</p>
+
+      <hr>
+
+      <h2>Part 3 &mdash; The Features Worth the Trouble</h2>
+
+      <h3>Replacing vector RAG with a wiki the agent can walk</h3>
+
+      <p>The original design used pgvector embeddings for recipe retrieval, and it was mediocre at the queries that actually matter. "Something vegetarian, cheap, that keeps for three days" is not a similarity problem; it is three predicates. Cosine distance will happily hand you a delicious &euro;40 roast.</p>
+
+      <p>So the knowledge layer became a generated wiki: one markdown file per recipe and per ingredient, with the structured facts in YAML frontmatter and the prose in the body.</p>
+
+      <pre><code>---
+title: "Cheesecake leggera"
+category: "Dolci"
+servings: 10
+shelf_life_days: 5
+prep_minutes: 30
+calories_per_serving: 245
+estimated_cost: 1206
+dietary_tags:
+  - vegetarian
+ingredienti_structured: [{"name": "Biscotti secchi integrali", "unit": "g", "quantity": 180.0}, ...]
+---</code></pre>
+
+      <p>The agent gets three tools over that directory &mdash; <code>list_wiki_index()</code> for the entry point, <code>read_wiki_file(path)</code>, and <code>grep_wiki(pattern)</code>, which understands typed filters over the frontmatter and composes them with <code>AND</code>:</p>
+
+      <pre><code>grep_wiki("dietary_tags:vegetarian AND calories_per_serving &lt;= 400 AND shelf_life_days &gt;= 3")</code></pre>
+
+      <p>Generation is a Django management command, and the interesting flag is <code>--with-rephrase</code>, which is <em>opt-in</em>. Without it the command emits templated markdown from database rows and calls no model at all. On my laptop:</p>
+
+      <table>
+        <thead>
+          <tr><th>Operation</th><th>Result</th><th>Time</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>generate_llm_wiki</code> (no rephrase)</td><td>1,761 files, 7.9 MB</td><td>1.1 s, zero LLM calls</td></tr>
+          <tr><td>3-predicate compound query</td><td>196 recipes</td><td>2.40 s</td></tr>
+          <tr><td><code>category:Dolci AND calories_per_serving &lt;= 300</code></td><td>57 recipes</td><td>2.09 s</td></tr>
+        </tbody>
+      </table>
+
+      <p>Rebuilding the entire knowledge base in about a second, for free, deterministically, is the property that makes this design worth defending. Embeddings cost money per document and go stale silently when a row changes; this corpus is a pure function of the database, so the recovery procedure for "the wiki is wrong" is to delete it.</p>
+
+      <p>The honest cost is on the read side. <code>_grep_wiki_structured</code> does <code>os.walk</code> over the whole tree, parses every file's YAML frontmatter, and evaluates the predicates in Python &mdash; an O(n) full-corpus scan per query, which is where those 2.4 seconds come from. The generator also writes an <code>indexes/</code> tree that already has the answers pre-bucketed:</p>
+
+      <pre><code># Dietary
+- [Vegetarian](vegetarian.md) (484)
+- [Vegan](vegan.md) (95)
+- [Gluten-Free](gluten-free.md) (283)
+- [Low Calorie &le;400](low-cal.md) (304)</code></pre>
+
+      <p>&hellip;and <code>grep_wiki</code> never consults them. The agent can reach them by reading <code>INDEX.md</code> and following a link, which is a very different thing from the tool being fast. At 1,761 files a scan is a rounding error against an LLM round trip. At 50,000 it is the whole latency budget, and the fix is already sitting in the repo unused.</p>
+
+      <h3>The cost chain, and a receipt that is allowed to disagree with you</h3>
+
+      <p>Cost resolution has a strict precedence: a per-user price override beats the system-wide catalogue price, which beats a regional heuristic. Every ingredient quantity is normalised toward kilograms, and an out-of-season ingredient carries a &times;1.3 multiplier.</p>
+
+      <p>The design decision I am still happy with is what happens when you photograph a supermarket receipt. A vision model extracts the line items into <code>ReceiptScan</code> and <code>ReceiptScanItem</code> rows, and those real prices feed an "actual spend" line on the dashboard next to the estimate. What they explicitly do <em>not</em> do is update your saved price. From the glossary: <em>"Does not auto-update <code>UserIngredientPrice</code> &mdash; user must explicitly accept."</em> If you told the system pasta costs &euro;1.20/kg and a receipt says &euro;1.10, the system shows you both and shuts up. A system that silently rewrites a number the user typed is a system the user stops typing numbers into.</p>
+
+      <h3>Medical language, deliberately forgotten</h3>
+
+      <p>Users describe food restrictions in medical terms because that is how humans talk: "I'm coeliac", "lactose intolerant". Storing that means storing health data, with everything GDPR attaches to it. So free-text preferences pass through an LLM whose entire job is to translate clinical language into preference language before anything is written to the database, preserving <em>intensity</em> while dropping the diagnosis &mdash; an allergy becomes "I absolutely have to avoid", an intolerance becomes "I try to limit". The prompt is blunt about it:</p>
+
+      <pre><code>REGOLA FONDAMENTALE: L'output NON deve MAI contenere riferimenti a:
+- condizioni mediche, diagnosi, patologie
+- reazioni del corpo, digestione, sintomi fisici
+&hellip;
+2. Non rivelare mai la presenza originale di termini medici.</code></pre>
+
+      <p>Two things make this more than prompt theatre. The rephrasing is not logged, because a log of "what the user originally wrote" is exactly the record the feature exists to avoid creating. And when the model fails, the code falls back to storing the user's original text rather than dropping their input on the floor &mdash; a deliberate trade of strictness for not losing data, which is the sort of thing that belongs in an ADR and currently lives only in an <code>except</code> block.</p>
+
+      <h3>Token accounting per user, per feature</h3>
+
+      <p>Every model call is attributed: <code>LLMUsageDaily</code> holds prompt, completion and reasoning tokens keyed by <code>(user, date, feature, model)</code>, with a price table in settings turning tokens into euros for an admin dashboard. Eleven features are enumerated, from <code>chat</code> to <code>scan_receipt</code> to <code>generate_wiki</code>. Two of the model entries are priced at <code>(0, 0)</code>, so the vision calls report as free &mdash; which they are not. The accounting skeleton is right and one table needs numbers in it.</p>
+
+      <hr>
+
+      <h2>Part 4 &mdash; What Neither the Spec Nor the Loop Caught</h2>
+
+      <p>Everything above is the part I would put in a talk: the specification, the loop, the features the two of them produced. Here is what happened when I finally cloned the repo onto a clean machine, seeded the database, started the app and looked at what it says.</p>
+
+      <p>This is the honest accounting of the experiment. Thirty agent-written pull requests, 703 tests, a glossary, an ADR trail and a reviewer that catches message leaks &mdash; and every single defect below was found in the first afternoon that a human ran the thing and read the output. Not one of them needed me to read the implementation, which is just as well, because I still have not.</p>
+
+      <h3>1. The ingredient namespace is scraped text wearing a table</h3>
+
+      <p>The master ingredient list is derived from raw recipe lines by one regex &mdash; cut the string at the first digit:</p>
+
+      <pre><code>def extract_ingredient_name(raw):
+    match = re.match(r'^(.+?)\s+\d+', raw)
+    if match:
+        return match.group(1).strip()
+    return raw.strip()</code></pre>
+
+      <p>On <code>"Farina 00 200 g"</code> that works. On anything where the quantity is expressed in words, or hidden in a parenthetical, it keeps the whole line. The result is 2,029 rows in a table called <code>Ingredient</code>:</p>
+
+      <table>
+        <thead>
+          <tr><th>Rows in <code>Ingredient</code></th><th>Count</th><th>Example</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Starting with "Acqua"</td><td>39</td><td><code>Acqua mezzo bicchiere</code></td></tr>
+          <tr><td>Starting with "Uov"</td><td>54</td><td><code>Uova (1 intero e</code></td></tr>
+          <tr><td>Four words or longer</td><td>638</td><td><code>Vitellone 1 pezzo di reale</code></td></tr>
+        </tbody>
+      </table>
+
+      <p>Thirty-nine kinds of water. A slice of them, in the order Postgres hands them back:</p>
+
+      <pre><code>'acqua'                      # 'Acqua' is a second, separate row
+'Acqua (alla temperatura di' # truncated mid-sentence
+'acqua q'                    # "q.b." cut at the dot
+'Acqua mezzo bicchiere'      # quantity in words, so the digit regex never fired
+'Acqua minerale ghiacciata'
+'Acqua o brodo di verdure'   # two ingredients, one row
+'Acqua (variabile in base a quanto sia da bagnare il pane)'</code></pre>
+
+      <p>One row is a truncated sentence about how wet the bread should be; one offers a choice between water and vegetable stock; several are the same water at a different temperature, and <code>acqua</code> and <code>Acqua</code> are two distinct rows because the uniqueness constraint is case-sensitive. The encyclopedia table, which is supposed to hold one entry per real-world ingredient, has six separate entries for cuts of veal and one called <code>Uova 1 da</code>. None of this is cosmetic, because the price lookup runs on these strings.</p>
+
+      <h3>2. Substring matching turns a dictionary into a coin flip</h3>
+
+      <p>Price resolution matches ingredient names by containment in either direction &mdash; <code>short in target or target in short</code> &mdash; and takes the first hit while iterating a dict. I measured what that means across every distinct ingredient name that appears in a recipe's structured list:</p>
+
+      <table>
+        <thead>
+          <tr><th>Distinct ingredient names in recipes</th><th>1,181</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Match exactly one price row</td><td>638</td></tr>
+          <tr><td>Match <strong>more than one</strong> price row</td><td><strong>543</strong></td></tr>
+          <tr><td>Match none</td><td>0</td></tr>
+        </tbody>
+      </table>
+
+      <p>For 46% of ingredients, which price you get depends on iteration order. The spreads are not subtle: <code>acqua</code> matches 19 rows ranging &euro;0.30&ndash;&euro;10.00/kg; <code>sale</code> matches 13 rows over &euro;1&ndash;&euro;20; <code>manzo</code> matches 15 rows over &euro;2&ndash;&euro;30. The worst is <code>risotto allo zafferano freddo</code>, which matches two rows spanning &euro;2.00 and &euro;15,000.00 per kilo &mdash; a factor of 7,500 decided by whichever key Python reaches first.</p>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 250" role="img" aria-label="How a recipe line becomes a price: regex truncation, substring match against a polluted namespace, then a generic unit weight">
+          <defs>
+            <marker id="arr-price" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+          </defs>
+
+          <text x="360" y="20" text-anchor="middle" class="d-text-sm">Three lossy steps, each individually reasonable.</text>
+
+          <rect x="20" y="42" width="150" height="54" rx="5" class="d-box-soft"/>
+          <text x="95" y="62" text-anchor="middle" class="d-text-b">Scraped line</text>
+          <text x="95" y="80" text-anchor="middle" class="d-mono">Zafferano in pistilli 6</text>
+
+          <rect x="205" y="42" width="150" height="54" rx="5" class="d-box"/>
+          <text x="280" y="62" text-anchor="middle" class="d-text-b">parsed, no unit given</text>
+          <text x="280" y="80" text-anchor="middle" class="d-mono">qty 6, unit &rarr; "pz"</text>
+
+          <rect x="390" y="42" width="150" height="54" rx="5" class="d-box"/>
+          <text x="465" y="62" text-anchor="middle" class="d-text-b">substring match</text>
+          <text x="465" y="80" text-anchor="middle" class="d-mono">Zafferano &euro;15,000/kg</text>
+
+          <rect x="575" y="42" width="125" height="54" rx="5" class="d-box-accent"/>
+          <text x="637" y="62" text-anchor="middle" class="d-text-inv">&euro;7,200</text>
+          <text x="637" y="80" text-anchor="middle" class="d-text-inv">for the pistils</text>
+
+          <line x1="172" y1="69" x2="200" y2="69" class="d-line" marker-end="url(#arr-price)"/>
+          <line x1="357" y1="69" x2="385" y2="69" class="d-line" marker-end="url(#arr-price)"/>
+          <line x1="542" y1="69" x2="570" y2="69" class="d-line" marker-end="url(#arr-price)"/>
+
+          <rect x="205" y="128" width="150" height="66" rx="5" class="d-box-outline"/>
+          <text x="280" y="148" text-anchor="middle" class="d-text-accent">unit heuristic</text>
+          <text x="280" y="166" text-anchor="middle" class="d-mono">"pz" &rarr; 0.08 kg</text>
+          <text x="280" y="184" text-anchor="middle" class="d-text-sm">a pistil weighs 0.002 g</text>
+
+          <rect x="390" y="128" width="150" height="66" rx="5" class="d-box-outline"/>
+          <text x="465" y="148" text-anchor="middle" class="d-text-accent">namespace</text>
+          <text x="465" y="166" text-anchor="middle" class="d-mono">2,029 rows, 39 "Acqua"</text>
+          <text x="465" y="184" text-anchor="middle" class="d-text-sm">543 of 1,181 ambiguous</text>
+
+          <line x1="280" y1="124" x2="280" y2="100" class="d-line d-dash" marker-end="url(#arr-price)"/>
+          <line x1="465" y1="124" x2="465" y2="100" class="d-line d-dash" marker-end="url(#arr-price)"/>
+
+          <text x="360" y="224" text-anchor="middle" class="d-text-sm">6 &times; 0.08 kg &times; &euro;15,000/kg = &euro;7,200. Correct answer: about 18 cents.</text>
+        </svg>
+        </div>
+        <figcaption>Nobody wrote a bug. Three defaults composed into one.</figcaption>
+      </figure>
+
+      <h3>3. The generic unit weight, and the &euro;7,200 paella</h3>
+
+      <p>Recipe quantities arrive in Italian kitchen units, so there is a lookup table converting each to kilograms: a <code>cucchiaio</code> is 0.015 kg, a <code>foglia</code> is 0.001 kg, and the fallback &mdash; along with <code>pz</code>, "pieces" &mdash; is <strong>0.08 kg</strong>. Eighty grams per piece is a fine guess for an egg or a lemon. The source line for the saffron in <em>Paella alla valenciana</em> is <code>"Zafferano in pistilli 6"</code>: a quantity with no unit at all, so the parser supplies <code>pz</code>. Here is the cost breakdown, recomputed on my machine:</p>
+
+      <pre><code>{'name': 'Zafferano in pistilli', 'quantity': 6.0, 'unit': 'pz', 'cost': 7200.0}
+{'name': 'Coniglio a pezzi',     'quantity': 150.0, 'unit': 'g', 'cost': 1.35}
+{'name': 'Pollo a pezzi',        'quantity': 150.0, 'unit': 'g', 'cost': 1.35}
+{'name': "Olio extravergine d'oliva", 'quantity': 80.0, 'unit': 'g', 'cost': 1.2}</code></pre>
+
+      <p>Six pistils of saffron &times; 0.08 kg &times; &euro;15,000/kg = &euro;7,200. Six pistils weigh roughly twelve milligrams and cost about eighteen cents. The recipe serves two, so the app is prepared to tell a user that dinner costs &euro;3,604 a head. The number stored on the row disagrees with both: <code>estimated_cost = 90108</code>. Whatever wrote that is not what computes the estimate today, and nothing has reconciled them.</p>
+
+      <p>The reason this survived thirty agent reviews and every test I wrote is that it is <em>almost never wrong</em>. Across all 841 recipes, nine come out above &euro;50 per serving:</p>
+
+      <pre><code>recipes over 50 EUR per serving: 9 of 841
+[(4500, 'Riso al salto'), (3604, 'Paella alla valenciana'), (100, 'Plumcake allo yogurt'),
+ (100, 'Ossobuco alla milanese'), (100, 'Frolla Milano'), (99, 'Pan di Spagna')]</code></pre>
+
+      <p>Nine out of 841 is 1.1%. A weekly plan of 28 meals came to &euro;74, which looks completely plausible, and stays plausible right up to the week the planner picks a risotto with saffron in it. Every review question was "does this code do what the ticket said?" &mdash; and it does. Nobody asked "is &euro;4,500 a sane price for fried rice", because that is a question about the world, and the loop has no eyes.</p>
+
+      <div class="callout">
+        <div class="callout-label">Scar</div>
+        <p>The seasonality multiplier never fires on this data: <code>seasonality_months</code> is empty on all 891 encyclopedia rows in the committed fixture. A &times;1.3 adjustment implemented, tested, documented in the glossary, and dormant. Worth remembering next time a spec says a field is "populated by LLM during ingest" &mdash; that sentence describes an intention, not a column.</p>
+      </div>
+
+      <h3>4. Frontmatter that looks precise and measures nothing</h3>
+
+      <p><code>shelf_life_days</code> is the field that makes "something that keeps until Thursday" answerable, and the wiki generator falls back to a per-category default when the recipe's own value is null:</p>
+
+      <pre><code>CATEGORY_SHELF_LIFE_DEFAULTS = {'primi': 2, 'secondi': 3, 'antipasti': 3,
+                                'contorni': 3, 'dolci': 5, 'colazione': 5}</code></pre>
+
+      <p>Sensible. Except that on the shipped data, the number of recipes with a real, estimated <code>shelf_life_days</code> is <strong>zero out of 841</strong>. Every value in every wiki file is the category default. So <code>grep_wiki("shelf_life_days &gt;= 4")</code> is not a shelf-life query at all &mdash; it is a slightly obfuscated way of asking "is this a dessert or a breakfast", and it returns a precise-looking number with a typed comparison operator to prove it. A default that is indistinguishable from a measurement is worse than a null, because null makes the agent ask.</p>
+
+      <h3>5. A savoury pie for breakfast</h3>
+
+      <p>I seeded a user, generated a week, and looked at what the planner actually served. Friday's breakfast: <em>Torta rustica salata</em> &mdash; rustic savoury pie. Saturday's: <em>Torta salata ai carciofi</em> &mdash; artichoke tart. Two lines explain it:</p>
+
+      <pre><code>MEAL_CATEGORY_MAP = {'breakfast': ['dolci', 'antipasti', 'colazione'], ...}
+BREAKFAST_KEYWORDS = [..., 'ciambell', 'muffin', 'pane', 'dolce', 'torta', ...]</code></pre>
+
+      <p>Breakfast accepts the <em>antipasti</em> category, and <code>'torta'</code> is a breakfast keyword because in Italian a <em>torta</em> is usually a cake. A <em>torta salata</em> is a quiche. The substring match cannot tell, and the word that disambiguates &mdash; <code>salata</code> &mdash; is sitting right there in the title being ignored. It is the same bug class as the scraper filing monkfish under fruit, in a different file, two months later. Substring classifiers do not get safer with practice; they get safer with a test per adversarial case, and I wrote those for the scraper and not for the planner.</p>
+
+      <h3>6. A dashboard that cannot see the future</h3>
+
+      <p>The spending dashboard showed <strong>&euro;14.00</strong> estimated for a user whose saved plan costs &euro;74. Both numbers come from the same function. The difference is the window:</p>
+
+      <pre><code>today = date_type.today()
+cutoff = today - relativedelta(months=months)
+plan = compute_weekly_plan_cost(request.user, cutoff, today, ...)</code></pre>
+
+      <p>The window runs from twelve months ago to <em>today</em>, which is correct for receipts &mdash; you cannot scan a receipt you have not been given &mdash; and wrong for meal plans, which are the one thing in the system that exists to describe next week. Of 28 planned meals, 24 fall after today and are invisible; the &euro;14 is Friday's four meals. A user's first act after generating a plan is to ask what it will cost, and the answer is off by 5&times; in the direction that makes the app look broken. Two date ranges got collapsed into one because they were both "the spending period", and the glossary never separated them.</p>
+
+      <h3>7. The test that was green when it merged and rotted by the calendar</h3>
+
+      <p>703 tests. One failure:</p>
+
+      <pre><code>FAIL: test_user_drilldown_data (recipes.tests.test_analytics.AdminAnalyticsDataTestCase)
+AssertionError: 0 != 2
+Ran 703 tests in 136.265s
+FAILED (failures=1)</code></pre>
+
+      <p>The test writes two usage rows dated <code>self.today</code>, then calls the analytics endpoint with no date parameters. <code>self.today</code> is not today:</p>
+
+      <pre><code>self.today = date(2026, 5, 31)</code></pre>
+
+      <p>&hellip;and the endpoint, given no range, defaults to <code>date.today() - timedelta(days=30) &hellip; date.today()</code>. The fixture was inside the default window while the wall clock stayed within thirty days of 31 May, so the test passed, CI went green, the reviewer approved and I merged. It has been failing since the first of July, silently, for every developer and every agent that runs the suite. A hardcoded date plus a relative window is a time bomb with a fuse measured in weeks, and the one thing guaranteed not to notice is a process that only ever asks "is CI green <em>right now</em>".</p>
+
+      <hr>
+
+      <h2>Part 5 &mdash; Fixing It, and What It Looks Like Now</h2>
+
+      <p>All of the above is fixed, in one branch, which is open as a pull request I have not merged. That is deliberate: the same rule the loop follows applies to me.</p>
+
+      <p>Two of the fixes were small. The rotten test's fixtures became relative to the clock. The spending window now runs to the last planned date instead of to today, so the estimate covers the plan rather than the one day of it that has already happened. Breakfast candidacy moved from title keywords to the recipe's category, because the keyword list could not be saved: with <code>'torta'</code> admitting quiches, my first patch added an exclusion list, and the planner promptly served <em>Panelle</em> &mdash; fried chickpea fritters &mdash; on the strength of <code>'pane'</code>. Sweet categories, 221 recipes, title words only allowed to rule a recipe <em>out</em>.</p>
+
+      <p>The data and cost fixes are the substantial ones, and they are three layers of the same problem:</p>
+
+      <ol>
+        <li><strong>Canonicalise the names at ingest.</strong> A new module reduces a scraped line to the ingredient itself, and a management command rewrites and merges the rows that already exist, moving pantry entries, price overrides and receipt items onto the survivor. <strong>2,029 ingredients became 1,093</strong>, and 891 encyclopedia entries became 849. Flour grades survive &mdash; <code>Farina 00 200 g</code> becomes <code>Farina 00</code>, not <code>Farina</code> &mdash; and real descriptors like <code>Acqua minerale ghiacciata</code> survive too, because the price lookup no longer needs them gone.</li>
+        <li><strong>Match on the head noun, not on a substring.</strong> A catalogue name applies only if it is the ingredient's opening words, longest prefix first, ties broken alphabetically. <code>zafferano</code> still prices <code>Zafferano in pistilli</code>; it no longer prices a risotto that merely mentions saffron, <code>mela</code> cannot reach <code>melanzane</code>, and no price depends on dict iteration order any more.</li>
+        <li><strong>Refuse to guess a weight you cannot afford to guess.</strong> Above &euro;200/kg a generic unit gets no cost at all &mdash; the ingredient is reported with an explicit "unit weight unknown" instead of a number. Pistils got a real weight, <code>bustina</code> joined the generic units, and a bare count above 50 is read as grams, because <code>"Gamberi 300"</code> is 300 grams of prawns and not 300 prawns.</li>
+      </ol>
+
+      <p>The paella that cost &euro;7,208 now costs &euro;7. Across all 841 recipes, <strong>nothing exceeds &euro;50 per serving</strong> &mdash; the worst is &euro;16, the median is &euro;1.08. Fifty-two new tests pin each of these cases, one per failure above, and the suite is 755 green.</p>
+
+      <p>For the images there was no clean answer at first. <code>media/</code> is gitignored and <code>image_url</code> is empty on every shipped row, and the source site's <code>robots.txt</code> disallows AI crawlers outright, so re-crawling is the operator's call and not something an agent should do on his behalf. What the branch does is stop the loss for next time &mdash; the loader now carries <code>image_url</code> through &mdash; and draw an honest placeholder per recipe: a flat colour, the dish name, the category, and the words <em>immagine non disponibile</em>. Nothing pretending to be a photograph.</p>
+
+      <h3>Then we tried to actually run the crawler</h3>
+
+      <p>The project owner ran the one command that should have fixed the images properly, as the site's own declared bot. It died immediately:</p>
+
+      <pre><code>$ python run_crawler.py recipes
+KeyError: 'Spider not found: giallo_recipes'</code></pre>
+
+      <p>The spider is called <code>giallo_recipes</code> and it does exist. What does not exist is <code>scrapy.cfg</code>, which was never committed &mdash; so <code>get_project_settings()</code> returns Scrapy's defaults, <code>SPIDER_MODULES</code> is empty, and no spider can be discovered. <strong>The crawler has never been runnable from a clean clone.</strong> That is also the real reason the photographs were unrecoverable: the tool that would refetch them has never started.</p>
+
+      <p>Fixing that revealed the next one. Any use of the <code>scrapy</code> CLI &mdash; <code>fetch</code>, <code>shell</code>, <code>list</code> &mdash; failed on <code>ITEM_PIPELINES</code> naming <code>ImageDownloadPipeline</code>, a class that has never been in <code>pipelines.py</code>. <code>run_crawler.py</code> overrides that setting, which is precisely why nobody noticed.</p>
+
+      <p>With both fixed the crawl ran, reported success, and collected <strong>56 recipes</strong>. The stats say why: <code>request_depth_max: 1</code> &mdash; page one of each of the four categories, then nothing. The pagination selectors were written against markup the site no longer serves: it looks for <code>a[rel="next"]</code> and <code>a.gz-page-link</code>, while the page renders <code>a.page</code>, <code>a.page.cur</code> and an <code>a.gz-arrow.next</code> arrow, with pages as path segments (<code>/ricette-cat/page2/Primi/</code>). No error, no warning &mdash; the same silent-loss shape as the <code>MAX_PAGES = 15</code> cap in the scraper post, three months later, in a different file.</p>
+
+      <div class="callout">
+        <div class="callout-label">Scar</div>
+        <p>And one of the six was mine. Placeholders live in <code>Recipe.image</code> like any other image, and both the crawler pipeline and <code>download_images</code> decided whether to fetch the real photo with <code>if not recipe.image</code>. Once my placeholders existed, that test was false for every recipe: the crawl set <code>image_url</code> on 56 rows and downloaded <strong>zero</strong> photographs. I had introduced exactly the bug class I had spent the afternoon writing about &mdash; a value that is indistinguishable from the thing it stands in for. There is now one definition of what counts as a photograph, in <code>recipes/images.py</code>, used by all three call sites.</p>
+      </div>
+
+      <p>With the selectors fixed, the crawl walks the whole of each category, and it was still finding new recipes at a steady rate when we stopped it. The interesting part is not how many it found but what that says about the 841: that number was never the site's catalogue, it was an artifact of whatever the crawler could reach on the day &mdash; fifteen pages per category under the old cap, one page per category after the selectors broke. A number nobody chose, that everything downstream then treated as the data.</p>
+
+      <h3>The pipeline was red before any of this</h3>
+
+      <p>The pull request went red on CI, and it took reading the run to see that nothing on the branch had caused it:</p>
+
+      <pre><code>ModuleNotFoundError("No module named 'agno.models.metrics'")
+TypeError: cannot pickle 'traceback' object</code></pre>
+
+      <p>The workflow installs a hand-written package list instead of <code>requirements.txt</code>, so the agent framework was resolved fresh on every run and has since moved past the pinned <code>&lt;=2.6.11</code>. The second line is the parallel test runner failing to serialise the first one, which is how the real error stayed invisible. The lint step would have failed next for the same reason: <code>ruff</code> installed unpinned and run with no config, and a later release widened its default rules from clean to <strong>428 findings</strong> on untouched code.</p>
+
+      <p>A pin that CI ignores is not a pin. The workflow now installs <code>requirements.txt</code>, pins the linter, and states its rule set in a <code>ruff.toml</code>; <code>--parallel</code> is gone so a failing test can say which test it was; and the path filters no longer watch two files that do not exist while ignoring the Scrapy project, the dependency list and the crawler entry point.</p>
+
+      <h3>What live API keys changed</h3>
+
+      <p>Receipt scanning was pinned to a vision model the provider had retired, so every scan died on <code>Invalid model</code> and returned a 500 carrying the raw exception. DeepSeek does have vision, on <code>deepseek-v4-flash-vision-exp</code> &mdash; not in the <code>/models</code> listing, so it has to be named explicitly, and sending an image to the text model does not error, it silently ignores it (<em>"But there is [Unsupported Image] placeholder. As AI, cannot see image"</em>, says the model's own reasoning trace). It is also a reasoning model: extracting twelve receipt lines spent <strong>4,422 tokens thinking</strong> before emitting a character of JSON, so the code's <code>max_tokens=1000</code> truncated every reply and made it look like a model that could not read receipts. With the budget raised it returns all twelve items and a total matching the receipt exactly.</p>
+
+      <p>And with the chat working, one more: asked what the week costs, the agent called <code>show_spending</code>, got back <em>"no receipts found"</em>, and invented an answer &mdash; <em>"siamo nell'ordine dei 100&ndash;140 &euro;"</em> &mdash; for a week the dashboard priced at &euro;68 from the same database. The tool only ever looked at receipts. It leads with the plan estimate now, which is the number the question was about.</p>
+
+      <p>Here is the result, on the fixed branch, with real photographs and live keys: the recipe grid, a search, a recipe costed ingredient by ingredient, the week's plan, the spending dashboard comparing estimate against a scanned receipt, and the agent answering the cost question from the tool instead of from imagination.</p>
+
+      <figure>
+        <video src="../img/posts/foodia-walkthrough.mp4" autoplay loop muted playsinline controls preload="metadata" aria-label="Walkthrough of Foodia: the recipe grid, a search, a recipe with per-ingredient costs, the weekly plan, the spending dashboard, and the chat agent answering what the week costs"></video>
+        <figcaption>The recipe grid with per-recipe cost badges; <em>Torta caprese</em> broken down to &euro;2.55 of chocolate, &euro;2.38 of hazelnuts, &euro;1.36 of butter &mdash; and a vanilla pod with no price at all, because the app now refuses to guess what one weighs; the week's plan with sweet breakfasts; &euro;65.00 estimated against &euro;33.00 actually spent, from a scanned receipt; and the agent answering the cost question from <code>show_spending</code> instead of inventing a range.</figcaption>
+      </figure>
+
+      <hr>
+
+      <h2>Part 6 &mdash; Getting It Running, and the Bit That Cannot Be Recovered</h2>
+
+      <p>The repo commits a 5.5 MB <code>dump.json</code> so you do not have to re-crawl or pay for LLM enrichment, and <code>docs/restore.md</code> documents the procedure. On <code>main</code>, the documented procedure does not work. Both paths fail, for opposite reasons:</p>
+
+      <pre><code>$ python manage.py load_recipes dump.json
+KeyError: 'title'
+
+$ python manage.py loaddata dump.json
+django.db.utils.IntegrityError: Problem installing fixtures:
+insert or update on table "recipes_userprofile" violates foreign key constraint
+DETAIL:  Key (user_id)=(1) is not present in table "auth_user".</code></pre>
+
+      <p>The first fails because <code>dump.json</code> is a Django serialiser fixture (a list of <code>{model, pk, fields}</code>), while <code>load_recipes</code> &mdash; and the <code>dump_data</code> command that is supposed to produce the file &mdash; speak a different, hand-rolled <code>{recipes, ingredients, meta}</code> shape. The writer and the reader drifted apart and the committed artifact belongs to neither. The second fails because the fixture carries seven <code>UserProfile</code> rows pointing at auth users that were quite rightly not dumped, and Django's model signal creates a profile for every user you make, so pre-creating the users collides on the way back.</p>
+
+      <p>This works, from a clean clone:</p>
+
+      <pre><code># 1. Postgres with pgvector, and the extensions the models need
+docker compose up -d db
+docker compose exec -T db psql -U foodai -d foodai \
+  -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+
+# 2. Schema
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python manage.py migrate --noinput
+
+# 3. Placeholder auth users for the ids the fixture references,
+#    then drop the profiles the post_save signal just created
+.venv/bin/python manage.py shell -c "
+from django.contrib.auth.models import User
+from recipes.models import UserProfile
+for i in (1,2,3,4,5,6,8):
+    User.objects.get_or_create(id=i, defaults={'username': f'seed-user-{i}', 'is_active': False})
+UserProfile.objects.all().delete()"
+
+# 4. Now the fixture loads: 3,849 objects
+.venv/bin/python manage.py loaddata dump.json
+
+# 5. Explicit pks left the sequences behind the data
+.venv/bin/python manage.py sqlsequencereset auth recipes > /tmp/seq.sql
+docker compose exec -T db psql -q -U foodai -d foodai < /tmp/seq.sql
+
+# 6. Merge the duplicate ingredient rows
+.venv/bin/python manage.py canonicalize_ingredients
+
+# 7. Knowledge base, no API key required
+.venv/bin/python manage.py generate_llm_wiki
+
+# 8. Placeholder tiles, since media/ is not in the repo
+.venv/bin/python manage.py generate_placeholder_images</code></pre>
+
+      <p>That yields 841 recipes with calories and structured ingredients, 849 encyclopedia entries with prices, 1,093 ingredient rows, and a 1,761-file wiki. Skip step 5 and the first user you create dies on <code>duplicate key value violates unique constraint "auth_user_pkey"</code>, which is a confusing error to meet ten minutes into a project. Steps 6 and 8 are new; the whole sequence is now in <code>restore.md</code>, because a restore procedure nobody has executed is a wish, not a procedure.</p>
+
+      <p>What no amount of code fixes is the pictures. 743 of the 841 recipes reference a file under <code>media/recipes/</code>; <code>media/</code> is gitignored, so all 743 are missing on a fresh clone, and <code>image_url</code> is empty on <strong>all 841 rows</strong> &mdash; the scraper downloaded the images and never kept the URL it fetched them from. So <code>download_images</code> has nothing to download from, and the only recovery path is asking the source site again for URLs the database used to know. The loader now keeps the URL so the loss stops repeating, and the placeholders make the gap visible instead of broken, but the photographs themselves are a crawl I am not entitled to run casually: that site's <code>robots.txt</code> disallows <code>ClaudeBot</code>, <code>Claude-Web</code> and <code>anthropic-ai</code> outright. Its own <code>RecipeBot</code> is welcome, and that is the project owner's decision to make, not the agent's.</p>
+
+      <hr>
+
+      <h2>Key Takeaways</h2>
+
+      <ol>
+        <li><strong>The <code>_Avoid_</code> list is the highest-value line in a glossary.</strong> Defining a term stops half the drift; naming the words that must not be used for it stops the other half, which is an agent inventing a defensible parallel model for a concept you already have.</li>
+        <li><strong>Keep the rejected options in the ADR.</strong> The smallest diff and the correct design are usually different, and the record of why the cheap option loses is what prevents the next agent &mdash; or the next you &mdash; from re-choosing it.</li>
+        <li><strong>Plan serially, execute in parallel, never auto-merge.</strong> Bias the planner heavily toward "blocked": two agents on the same model produce two migrations with one parent, and that costs more human attention than another iteration would.</li>
+        <li><strong>Deterministic branch names make a loop resumable.</strong> <code>sandcastle/issue-{id}</code> means re-planning is idempotent, so a crashed iteration continues instead of forking a second attempt.</li>
+        <li><strong>An agent harness is infrastructure, not a prompt.</strong> Nine commits in one day went to sudo, mount, UID/GID and Postgres startup before any agent did useful work. Budget for a Docker image, not a config file.</li>
+        <li><strong>Verify the spec layer exists.</strong> Every prompt told every agent to read <code>AGENTS.md</code>, which has never been in the repository, and the standards file that does exist mandates Vue for a React frontend. A missing instruction file reads as an empty one, and nothing errors.</li>
+        <li><strong>A generated knowledge base beats embeddings when the queries are predicates.</strong> 1,761 files in 1.1 s with zero API calls, rebuildable by deleting the directory. Just know that a per-query full-corpus YAML scan is the price, and build the index before the corpus grows.</li>
+        <li><strong>Unit heuristics are where domain arithmetic goes to die.</strong> "A piece weighs 80 g" is right for eggs, off by 26&times; for a vanilla pod, and off by four orders of magnitude for a saffron pistil. It is wrong on 1.1% of recipes, always upward, which is exactly the frequency at which nobody notices.</li>
+        <li><strong>Substring matching over a scraped namespace is a coin flip.</strong> 543 of 1,181 ingredient names match more than one price row, one pair spanning &euro;2 to &euro;15,000 per kilo, resolved by dict order. Canonicalise names at ingest, or match exactly and log the misses.</li>
+        <li><strong>Do not let a default masquerade as a measurement.</strong> Zero of 841 recipes have a real shelf life, yet every wiki file states one, and a typed query filters on it. Null forces a question; a plausible default answers it wrongly and confidently.</li>
+        <li><strong>Never hardcode a date in a test that hits a relative window.</strong> 703 tests, one failure, green on the day it merged and rotten since 1 July. Agent review checks the diff against the ticket, and CI checks today &mdash; neither can see a fuse.</li>
+        <li><strong>Spec-driven process makes the code match the spec; it cannot make the spec match the world.</strong> Thirty reviewed pull requests, 703 tests and a glossary, and the thing that found a &euro;4,500 plate of fried rice was running the app and reading the output.</li>
+        <li><strong>A software factory still needs someone to open the box.</strong> Not to read the diff &mdash; I never did &mdash; but to use the product and check its numbers against reality. Every defect here was visible in one afternoon of clicking, and invisible to every layer that only ever compared code against a ticket. Whatever you automate, keep that afternoon.</li>
+        <li><strong>Fix the layer the bug lives in, not the symptom above it.</strong> The savoury-quiche breakfast tempted me into an exclusion list, and the exclusion list immediately served fried chickpea fritters because <code>'pane'</code> is inside <code>"Panelle"</code>. The fix was to stop asking the title and start asking the category. If your patch is another keyword, you are still playing the game that produced the bug.</li>
+        <li><strong>Run the thing, then run the thing that produces the thing.</strong> The crawler had never started from a clean clone &mdash; a missing <code>scrapy.cfg</code>, then a pipeline class that was never written, then pagination selectors three months stale, which is why 841 recipes looked like a catalogue and was actually one page per category. Every one of those was invisible to tests, to review and to CI, and obvious within a minute of typing the command.</li>
+        <li><strong>An unpinned dependency in CI is a clock, not a check.</strong> The pipeline was green in June and red in September with nobody touching it: the agent framework moved past a pin CI ignored, and the linter's defaults widened under it. If the build installs a package list nobody wrote down, it is measuring the date.</li>
+        <li><strong>A stand-in value must be distinguishable from the real thing.</strong> My own placeholder images were stored in the same field as photographs and silently taught the crawler that every recipe already had one. I wrote that bug into a codebase while documenting the same shape of bug in it.</li>
+      </ol>
+    </article>
+  </main>
+
+  <footer id="footer-slot"></footer>
+
+  <script src="../js/site.js"></script>
+</body>
+</html>
