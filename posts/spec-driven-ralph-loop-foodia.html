@@ -465,7 +465,7 @@ KeyError: 'Spider not found: giallo_recipes'</code></pre>
         <p>And one of the six was mine. Placeholders live in <code>Recipe.image</code> like any other image, and both the crawler pipeline and <code>download_images</code> decided whether to fetch the real photo with <code>if not recipe.image</code>. Once my placeholders existed, that test was false for every recipe: the crawl set <code>image_url</code> on 56 rows and downloaded <strong>zero</strong> photographs. I had introduced exactly the bug class I had spent the afternoon writing about &mdash; a value that is indistinguishable from the thing it stands in for. There is now one definition of what counts as a photograph, in <code>recipes/images.py</code>, used by all three call sites.</p>
       </div>
 
-      <p>With the selectors fixed, the crawl walks the whole of each category. It had found <strong>3,549 recipes and downloaded 3,547 photographs</strong> when we stopped it early, still going. The database had 841. That number was never the site's catalogue: it was what fitted inside fifteen pages per category before the cap, and then what fitted in one page per category after the selectors broke.</p>
+      <p>With the selectors fixed, the crawl walks the whole of each category, and it was still finding new recipes at a steady rate when we stopped it. The interesting part is not how many it found but what that says about the 841: that number was never the site's catalogue, it was an artifact of whatever the crawler could reach on the day &mdash; fifteen pages per category under the old cap, one page per category after the selectors broke. A number nobody chose, that everything downstream then treated as the data.</p>
 
       <h3>The pipeline was red before any of this</h3>
 
