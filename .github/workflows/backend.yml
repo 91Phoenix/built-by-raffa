@@ -68,9 +68,9 @@ jobs:
     needs: [test, terraform]
     runs-on: ubuntu-latest
     environment: production
-    defaults:
-      run:
-        working-directory: infra
+    # No job-level working-directory: when the secrets are missing the
+    # checkout is skipped too, so infra/ does not exist and even the
+    # "Skipped" echo would fail to start.
     env:
       HAS_SECRETS: ${{ secrets.AWS_ROLE_ARN != '' && secrets.DEEPSEEK_API_KEY != '' }}
     steps:
@@ -92,6 +92,7 @@ jobs:
           terraform_version: "1.15.8"
       - name: Terraform apply
         if: env.HAS_SECRETS == 'true'
+        working-directory: infra
         env:
           TF_VAR_deepseek_api_key: ${{ secrets.DEEPSEEK_API_KEY }}
           TF_VAR_allowed_origin: ${{ vars.ALLOWED_ORIGIN || 'https://bradicode.dev' }}
