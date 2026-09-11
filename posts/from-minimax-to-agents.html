@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>From Minimax to Agents: Sixteen Years of Projects, and the Two Ideas That Kept Coming Back &mdash; Bradicode</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <nav id="nav-slot"></nav>
+
+  <main>
+    <a href="index.html" class="back-link">&larr; All posts</a>
+
+    <article>
+      <div class="post-header">
+        <h1>From Minimax to Agents: Sixteen Years of Projects, and the Two Ideas That Kept Coming Back</h1>
+        <div class="post-meta">
+          <span>September 2026</span>
+          <span class="dot">&middot;</span>
+          <span>14 min read</span>
+        </div>
+      </div>
+
+      <p>There is a comment in my master's thesis code, sitting in the middle of an aggregate class, in capitals:</p>
+
+      <pre><code>//***********REMINDER, HERE IS A GOOD PLACE WHERE TO TRY
+//                   TO IMPLEMENT THE EVENTUAL CONSISTENCY
+public List&lt;Event&gt; process(UpdatePhotoRecipeCommand cmd) {</code></pre>
+
+      <p>Twenty-four year old me left himself a note about the hardest idea in the system and then shipped the thesis anyway. I find that comment funny and slightly embarrassing, and also the single most honest artifact of my career, because <em>that</em> is what the work actually looks like: you understand a concept well enough to name it, you get the system running, and the real understanding arrives years later when the idea comes back wearing a different costume and this time there is a production incident attached.</p>
+
+      <p>This post is the wide-angle version of my CV. A job-search application in C#. A patch to the JDK's security architecture. A board-game player. A microservices thesis built inside a chocolate company. A chatbot written in two days. Risk software for capital markets. A CI system past 400,000 builds a month. Now a team of seven and a pile of coding agents. Different decades, different stacks, different job titles &mdash; and two ideas that kept showing up in all of them.</p>
+
+      <hr>
+
+      <h2>Bologna, 2013&ndash;2015: Three Student Projects That Were Not About What I Thought</h2>
+
+      <p>I started computer engineering at the University of Bologna in 2010 and came out in 2016 with a bachelor's and a master's, 110/110 cum laude. In between, three projects I still keep on GitHub, each of which taught me something other than its stated subject.</p>
+
+      <p><strong>Work Search System</strong> (2013, C#) was supposed to be about object-oriented design patterns. You analyse customer requirements, draw the UML, then implement: an application that matches job seekers and employers and tells the unemployed which skills are most in demand, so they know what to learn next. What it was actually about was the distance between a requirements document and a working model. The UML diagrams were fine. The moment the domain had to survive contact with real queries, half of those neat boxes turned out to be the wrong nouns. I have redrawn that lesson in every domain model since &mdash; the diagram is a hypothesis, and the code is the experiment that falsifies it.</p>
+
+      <p><strong>Java Security Model Extension</strong> (2014) was the one that taught me to read below my own abstraction. The task: customise the JDK security architecture so you could express complex resource-access policies, with the policies themselves defined in RDF and parsed through Java's introspection classes. So you write a parser, plug your policy provider into the JVM's permission-checking machinery, and then discover the thing nobody mentions in the lecture: <strong>the security manager is on the hot path</strong>. Every guarded call asks your code a question. A parse-per-check design is correct and unusable. The fix was to hold parsed policies in memory and only re-read them when they changed &mdash; my first cache, my first invalidation problem, and my first encounter with the fact that a correct implementation can still be the wrong one.</p>
+
+      <p><strong>AI Nine Men's Morris Player</strong> (2015) is the one I still quote at people. Minimax with alpha-beta pruning, a hand-built heuristic for board evaluation, and the constraint that actually shaped the design: <strong>iterative deepening under a time limit</strong>. You search depth 1 and keep the best move. Then depth 2, and keep the best move. Depth 3. When the clock runs out &mdash; and it will run out mid-search, in a position you have not finished evaluating &mdash; you play the best move you already have.</p>
+
+      <blockquote>You do not get to finish thinking. You get to have an answer ready at every moment you might be interrupted.</blockquote>
+
+      <p>At the time I filed that under "game AI technique". It is not. It is the shape of incident response, of quarterly planning, of every agent loop I have written since. More on that at the end.</p>
+
+      <h2>Ferrero, 2016: The Thesis, and Eventual Consistency for Real</h2>
+
+      <p>My master's thesis was an R&amp;D project built during an internship at Ferrero in Luxembourg: a distributed application on a microservices architecture, at a moment when "should we do microservices" was still a genuine argument rather than a default. The stated goal was to take the patterns seriously rather than sprinkle them &mdash; API Gateway, Service Discovery, container per service, access tokens, and the two that carried the whole thing: <strong>CQRS and Event Sourcing</strong>.</p>
+
+      <p>I built it on the Eventuate platform, Chris Richardson's framework for exactly this problem. The domain was a recipe-sharing application: customers submit recipes, recipes get moderated, moderated recipes become visible. Small enough to finish, rich enough that the distributed data management problem shows up honestly.</p>
+
+      <p>Here is what the system did.</p>
+
+      <figure>
+        <div class="diagram-scroll">
+<svg class="diagram" viewBox="0 0 720 300" role="img" aria-label="Thesis architecture: gateway to command service, events to a MySQL event store, change data capture tailing the log into Kafka, subscribers for moderation and the denormalized query side, and moderators publishing their verdicts back through the same log">
+          <defs>
+            <marker id="arr-th" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+            </marker>
+            <marker id="arr-th-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead-accent"/>
+            </marker>
+          </defs>
+
+          <rect x="50" y="42" width="130" height="46" rx="5" class="d-box-soft"/>
+          <text x="115" y="63" text-anchor="middle" class="d-text">gateway</text>
+          <text x="115" y="79" text-anchor="middle" class="d-text-sm">Zuul + Redis session</text>
+
+          <rect x="235" y="42" width="130" height="46" rx="5" class="d-box-soft"/>
+          <text x="300" y="63" text-anchor="middle" class="d-text">Recipe-command</text>
+          <text x="300" y="79" text-anchor="middle" class="d-text-sm">aggregate</text>
+
+          <rect x="420" y="42" width="130" height="46" rx="5" class="d-box-soft"/>
+          <text x="485" y="63" text-anchor="middle" class="d-text">MySQL</text>
+          <text x="485" y="79" text-anchor="middle" class="d-text-sm">event store</text>
+
+          <rect x="600" y="42" width="105" height="46" rx="5" class="d-box-soft"/>
+          <text x="652" y="63" text-anchor="middle" class="d-text">CDC</text>
+          <text x="652" y="79" text-anchor="middle" class="d-text-sm">tails the log</text>
+
+          <line x1="180" y1="65" x2="231" y2="65" class="d-line" marker-end="url(#arr-th)"/>
+          <line x1="365" y1="65" x2="416" y2="65" class="d-line" marker-end="url(#arr-th)"/>
+          <line x1="550" y1="65" x2="596" y2="65" class="d-line" marker-end="url(#arr-th)"/>
+
+          <line x1="652" y1="88" x2="652" y2="128" class="d-line-accent" marker-end="url(#arr-th-a)"/>
+
+          <rect x="50" y="132" width="655" height="34" rx="5" class="d-box-accent"/>
+          <text x="377" y="154" text-anchor="middle" class="d-text-inv">Kafka &mdash; the event log everything else reads</text>
+
+          <line x1="135" y1="166" x2="135" y2="206" class="d-line-accent" marker-end="url(#arr-th-a)"/>
+          <line x1="377" y1="166" x2="377" y2="206" class="d-line-accent" marker-end="url(#arr-th-a)"/>
+          <line x1="620" y1="166" x2="620" y2="206" class="d-line-accent" marker-end="url(#arr-th-a)"/>
+
+          <rect x="60" y="210" width="150" height="46" rx="5" class="d-box-soft"/>
+          <text x="135" y="231" text-anchor="middle" class="d-text">PhotoModerator</text>
+          <text x="135" y="247" text-anchor="middle" class="d-text-sm">subscriber</text>
+
+          <rect x="302" y="210" width="150" height="46" rx="5" class="d-box-soft"/>
+          <text x="377" y="231" text-anchor="middle" class="d-text">DescrModerator</text>
+          <text x="377" y="247" text-anchor="middle" class="d-text-sm">subscriber</text>
+
+          <rect x="545" y="210" width="150" height="46" rx="5" class="d-box-soft"/>
+          <text x="620" y="231" text-anchor="middle" class="d-text">Recipe-Query</text>
+          <text x="620" y="247" text-anchor="middle" class="d-text-sm">MongoDB read model</text>
+
+          <line x1="175" y1="206" x2="175" y2="170" class="d-line d-dash" marker-end="url(#arr-th)"/>
+          <line x1="417" y1="206" x2="417" y2="170" class="d-line d-dash" marker-end="url(#arr-th)"/>
+
+          <text x="360" y="286" text-anchor="middle" class="d-text-sm">Dashed: a moderator writes its own events. The log carries the verdict back &mdash; nobody reaches into anybody&rsquo;s database.</text>
+        </svg>
+        </div>
+        <figcaption>Nothing reads the command side's database. The log is the integration point &mdash; which is the whole argument, and the whole cost.</figcaption>
+      </figure>
+
+      <p>The command side is an event-sourced aggregate. It never stores state; it stores the events that produced the state, and rebuilds by replaying them. In Eventuate that shows up as a pair of method families &mdash; <code>process</code> takes a command and returns events, <code>apply</code> takes an event and mutates state &mdash; and the discipline is that <code>process</code> is never allowed to change anything:</p>
+
+      <pre><code>public class Recipe
+    extends ReflectiveMutableCommandProcessingAggregate&lt;Recipe, RecipeCommand&gt; {
+
+  public List&lt;Event&gt; process(UpdateRecipeLikeCommand cmd) {
+    if (deleted) return new ArrayList&lt;&gt;();
+    return EventUtil.events(new UpdateRecipeLikeEvent());
+  }
+
+  public void apply(UpdateRecipeLikeEvent event) {
+    likesNumber++;
+  }
+}</code></pre>
+
+      <p>That <code>if (deleted) return new ArrayList&lt;&gt;()</code> is worth a second. A command against a deleted recipe does not throw &mdash; it produces <em>zero events</em>. In an event-sourced system "nothing happened" is a legitimate, expressible outcome, and saying so costs you nothing. It took me a long time in later systems to stop reaching for an exception every time a request arrived at a state that had moved on.</p>
+
+      <p>The interesting half is what happens after the write. The events land in a MySQL event store, and a change-data-capture process tails the database log and publishes them to Kafka &mdash; the same transaction-log-tailing approach Debezium later turned into the default answer for this problem. This is the part people skip when they draw microservices diagrams: you cannot write to your database and publish to a broker in one atomic step, so you make the database the only thing you write to, and let something else turn the committed log into messages. Every outbox implementation I have built since is that same trick.</p>
+
+      <p>From Kafka, everything downstream is a subscriber. The query side keeps a denormalized view in MongoDB, shaped for reading rather than for writing. The moderators &mdash; one for photos, one for descriptions &mdash; subscribe to recipe creation, make their verdict, and record it as an event on <em>their own</em> aggregate, which goes back out through the same log. Nobody reaches into anybody else&rsquo;s database, and the recipe&rsquo;s state machine advances because a verdict arrived, not because a moderator wrote a row. Choreography, before I knew the word for it. (The moderation decision itself was <code>Thread.sleep(500 + random(2500))</code> and a comparison &mdash; the thesis was about the plumbing, and I was not going to pretend otherwise.) Service discovery through Eureka, the gateway on Zuul with sessions in Redis, Hystrix for the circuit breakers, four Docker Compose files because it had to run spread across four hosts and prove it survived that.</p>
+
+      <p>And then the actual lesson, which is not in any of the boxes: <strong>the read side is always behind</strong>. A customer submits a recipe and immediately asks for it back, and the query service has not caught up, and returns nothing. That is not a bug to fix. It is the price of the architecture, and the design question is not "how do I make it go away" but "who is allowed to see stale data, for how long, and what do they see instead of a lie". The version of me writing that capitalised reminder had understood the mechanism and not yet the obligation.</p>
+
+      <div class="callout">
+        <div class="callout-label">Scar</div>
+        <p>There is a commented-out event handler in the customer query workflow &mdash; <code>updateNumberofLikes</code> &mdash; that would have kept a customer's like count in sync from a recipe event. I commented it out instead of solving it, because cross-aggregate consistency was harder than the thesis deadline. Nobody grades the handler you deleted. But the shape of that gap &mdash; a derived number that drifts because the thing keeping it honest was too expensive on the day &mdash; is the exact shape of half the data bugs I have chased professionally since.</p>
+      </div>
+
+      <h2>Reply, 2017: Frameworks for Engineers, and a Chatbot in Two Days</h2>
+
+      <p>Milan, consulting, and a project with CheBanca! that dropped me straight into thesis territory: the architecture team moving orchestration logic off a CA Layer7 API gateway and onto a custom modular SOA. My piece was a Spring-based infrastructural library embedded in every service, carrying traceability, security and &mdash; the requirement that was hardest to honour &mdash; simplicity.</p>
+
+      <p>That is where I learned that platform work is product work with a crueller audience. Your users are engineers, they are under their own deadlines, and if your abstraction costs them more than the thing it replaced they will route around it and you will find out six months later. An abstraction only its author can use is not an abstraction; it is a private joke with an API.</p>
+
+      <p>The other thing that happened at Reply was a hackathon. Two days to build <strong>Selly</strong>: a chatbot for credit-card holders handling customer care and FAQs, on Spring Boot, JPA, REST and api.ai, aimed at a real business problem &mdash; card issuers hold enormous amounts of customer data and still talk to people through either mass email or an expensive call centre, with nothing usable in between. We came second.</p>
+
+      <p>Worth pausing on the date: 2017. Intent classification, entity extraction, a dialogue tree, and a backend that had to decide what the user actually wanted before it could answer. Everything I do with LLM agents today is a recognisable descendant of that weekend, with the hard part &mdash; understanding the request &mdash; moved from a rules engine I had to hand-author into a model. The engineering around it, though &mdash; scoping what the bot is allowed to claim, deciding what happens when confidence is low, keeping the thing from confidently answering the wrong question &mdash; is the same job, and it is still most of the work.</p>
+
+      <h2>Murex, 2017&ndash;2020: Dublin, Risk Control, and Learning by Explaining</h2>
+
+      <p>I wanted to be abroad, so: Dublin, and Murex, a leader in capital markets software. Risk control team. Real Agile with real consequences &mdash; I picked up a SAFe Agilist certification there, which mattered less than the thing the process was protecting: features owned end to end, by the person who would be woken up by them.</p>
+
+      <p>Three parts of that job changed how I work.</p>
+
+      <p><strong>Production support.</strong> Six months on rotation, fixing critical customer problems under time pressure, in software where "wrong number" means somebody's risk position is wrong. Nothing has taught me more about designing for operability. You write code differently after you have been the person at 2am holding a stack trace that does not say which client, which trade, or which config.</p>
+
+      <p><strong>Performance campaigns.</strong> I led test campaigns on memory consumption and speed. This is where you find out that your mental model of a running JVM is a cartoon &mdash; allocation you did not know you were doing, a cache that is a leak with good manners, a benchmark that was measuring the harness. Measure, then believe.</p>
+
+      <p><strong>Innovation sprints.</strong> Murex gave engineers allocated time to explore technology and pitch it to the company: Docker, Deeplearning4j, Gatling, Angular, DialogFlow, Kafka, Redis, MongoDB. I also worked on the Jenkins pipelines in Groovy and took a turn as CI champion &mdash; the first time I owned build infrastructure, which is funny in retrospect given what came next.</p>
+
+      <p>But the durable lesson was smaller and more uncomfortable. I learned more in the hours I spent explaining my thinking to somebody else than in the weeks I spent quietly writing code. Mentoring, pitching, defending a decision to someone unconvinced &mdash; each of those finds the step in your reasoning you were skipping. Writing code lets you keep the hand-wave. Explaining it does not.</p>
+
+      <h2>HubSpot, 2020&ndash;2026: Scale, Metrics, and Leading Across Nine Time Zones</h2>
+
+      <p>I joined HubSpot mid-pandemic and met my team in person more than a year after my start date. Six years, Software Engineer to Senior to Technical Lead, eventually leading two teams across Europe and the US, and sitting on the strategic group defining engineering productivity standards for the wider organisation. About 2,700 pull requests merged and 2,300 reviewed, which is a number I mention mostly because the second one is the one I would defend.</p>
+
+      <p>The first half was the <strong>build system</strong>: HubSpot's own distributed CI, built fast by a small team, and by the time I arrived running into every assumption it had been built on. We took it from roughly 80,000 builds a month past 400,000 while <em>reducing</em> critical incidents &mdash; scheduling that stopped rebuilding what had not changed, pod provisioning, a reworked data layer, a long run of performance work, and security features including default-deny egress and typosquatting detection. Several of those have their own posts on this blog, because each of them is a real system with a real failure mode and none of it fits in a paragraph.</p>
+
+      <p>The second half was <strong>engineering data</strong>: a multi-year modernisation of the ETL behind productivity analytics, redesigned around object storage as the source of truth with the warehouse as a materialisation. Then, on top of that data, LLM-powered summarisation of engineering work at three granularities &mdash; individual, team, group &mdash; which started as a hackathon pitch, was picked as one of the three best projects, shipped to production for the whole company, and became an agentic system whose techniques we then reused for other domains.</p>
+
+      <p>That hackathon is the piece of leadership I am most attached to, and it is not because of where we placed &mdash; we were picked as one of the three best projects, and did not win. I pitched an idea, formed a team, then merged with another team chasing a complementary vision &mdash; and the combined group was split across the US and Europe, which on a two-day clock is not a detail. There is no synchronous day. You get a few hours of overlap and then the work continues without you.</p>
+
+      <p>So you run it the only way that works: split along seams rather than along people, hand over in writing at the end of each side's day, make every decision visible to somebody who was asleep when it was made, and accept that the other half of the team will be several hours stale on everything. Which is, precisely, the thesis problem. More on that in a second.</p>
+
+      <div class="callout">
+        <div class="callout-label">Scar</div>
+        <p>The metrics product worked, and some managers started using our numbers in performance reviews. Nobody asked us, and nothing in the product stopped them. A metric stripped of its managerial context is just a number, and numbers make terrible judges of people. We built something powerful and shipped it without deciding what it was <em>not</em> for &mdash; and declining to make that decision does not mean it goes unmade. It means your users make it for you.</p>
+      </div>
+
+      <h2>Now: A Team of Seven, and Agents That Do the Work</h2>
+
+      <p>Since July I have been an Engineering Manager at Biorsaf, running a team of seven. The first month went on two questions &mdash; how the team works, and how the systems fail &mdash; and then on closing both gaps: cutting long low-value recurring meetings and rebuilding the rest around only the people who need to be there, 1:1s with the tech leads, a feedback cadence, and critsit and post-mortem practice that turns incidents into a backlog instead of into folklore.</p>
+
+      <p>I stayed hands-on, deliberately, and what I build now is mostly two things. <strong>Agentic tooling</strong>: a set of coding-agent skills and scripts that take a design, turn it into tracked decisions, and then implement features through autonomous loops &mdash; rolled out so every engineer has them, because ten engineers with ten private agent setups is ten house styles. And <strong>the boring infrastructure that makes any of it safe</strong>: monitoring and alerting on the critical paths first, then the roadmap through Kubernetes, JVM, database and HTTP metrics; plus an IoT ingestion platform with continuous monitoring, which is the cold-chain work I have written about separately.</p>
+
+      <h2>The Two Ideas</h2>
+
+      <p>Sixteen years, and when I line the projects up, two ideas keep coming back.</p>
+
+      <p><strong>One: always have your best move ready.</strong> The Nine Men's Morris player could not finish its search, so it was built to be interruptible &mdash; a usable answer at every depth, improved while there was time, played when there was not. That is not a game-AI trick. It is how you run an incident: form the least-bad action now, keep investigating, act when the clock forces you. It is how a quarter of infrastructure work survives contact with a roadmap: ship something defensible at every checkpoint rather than a cathedral at the end. And it is exactly how a good agent loop is built &mdash; bounded iterations, a checkpoint after each one, a result that is reviewable if you stop it right now. Systems that can only produce value at completion are systems that mostly produce nothing.</p>
+
+      <p><strong>Two: consistency is eventual, including in teams.</strong> CQRS made me design for a read model that lags the write model &mdash; and taught me the real work is not eliminating the lag but deciding who tolerates it and what they see meanwhile. Then I led a team split across the US and Europe and found the same system with people in it. Half the team is always operating on a stale view. You do not fix that with more meetings, any more than you fix a read model by making every query hit the command side. You fix it the way you fix a distributed system: make the log of decisions the source of truth, let people catch up by replaying it, and design the work so a stale reader can still act correctly.</p>
+
+      <p>The async-first shift I made in my first month as a manager is that same design decision, applied to humans. I did not arrive at it from a management book. I arrived at it from a MongoDB read model that was four seconds behind a MySQL event store, in a chocolate company, in 2016.</p>
+
+      <p>I wrote myself a reminder about eventual consistency and then shipped without implementing it. It took about a decade to actually finish the ticket.</p>
+    </article>
+  </main>
+
+  <footer id="footer-slot"></footer>
+
+  <script src="../js/site.js"></script>
+</body>
+</html>
